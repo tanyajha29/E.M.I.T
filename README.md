@@ -1,1036 +1,307 @@
-## 🔐 C2Trace
+# E.M.I.T. - Evidence-backed Mobile Investigation Tool
 
-### Explainable Cross-Layer Evidence Correlation for Android C2 Analysis
+**A Forensic DFIR Platform for Android Application Package (APK) & Packet Capture (PCAP) Cross-Correlation**
 
-C2Trace is a research-oriented Android malware analysis platform designed to identify and explain **Command & Control (C2)-like behavior** by correlating evidence from multiple analysis layers:
-
-**Static Analysis + Runtime Analysis + Network Analysis → Cross-Layer Correlation → Explainable C2 Hypothesis**
-
-The goal is **not** to replace existing malware-analysis tools, but to orchestrate them and connect their outputs into a unified evidence model that an analyst can investigate and understand. 
-
----
-
-# 🎯 Problem
-
-Android malware can hide C2 infrastructure through:
-
-* Obfuscated or encrypted strings
-* Dynamic domain resolution
-* Runtime-generated URLs
-* Native code
-* Encrypted network communication
-* Periodic beaconing
-* Multiple communication endpoints
-
-A domain found during static analysis alone may not be malicious.
-
-However:
-
-```text
-Domain found in APK
-        +
-Domain revealed during execution
-        +
-DNS resolution
-        +
-Network connection
-        +
-Temporal correlation
-        ↓
-Stronger C2 hypothesis
-```
-
-C2Trace focuses on connecting these observations rather than treating them as isolated alerts. 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.13.7-blue.svg)](https://www.python.org/)
+[![React](https://img.shields.io/badge/React-18-cyan.svg)](https://reactjs.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-teal.svg)](https://fastapi.tiangolo.com/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-7.0+-green.svg)](https://www.mongodb.com/)
+[![Tests](https://img.shields.io/badge/Tests-88%20Passed-brightgreen.svg)](docs/TEST_REPORT.md)
 
 ---
 
-# 🧠 Core Research Question
+## 1. Executive Summary & What E.M.I.T. Is
 
-> **Does cross-layer evidence correlation improve the detection and explainability of C2-like behavior compared with isolated static or network analysis?**
+**E.M.I.T. (Evidence-backed Mobile Investigation Tool)** is a defensive digital forensics and incident response (DFIR) platform designed to investigate suspicious mobile applications and network traffic.
 
-### Hypothesis
-
-> Combining static, runtime, and network evidence with temporal/entity correlation will provide stronger and more explainable C2 assessments than relying on individual evidence sources.
+E.M.I.T. bridges the gap between **static mobile reverse engineering** and **network traffic analysis**. It ingests Android application packages (`.apk`) and raw network packet captures (`.pcap`, `.pcapng`), normalizes extracted indicators into a common evidence model, executes deterministic correlation rules, models evidence-backed attack chains via React Flow, calculates explainable risk scores, and compiles formal forensic dossiers in dual HTML and PDF formats.
 
 ---
 
-# 🏗️ System Architecture
+## 2. Problem Statement
 
-```text
-                         ┌──────────────────────┐
-                         │      Analyst UI      │
-                         │    React Dashboard   │
-                         └──────────┬───────────┘
-                                    │
-                              REST / WebSocket
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │      FastAPI API     │
-                         │   Orchestration Layer│
-                         └──────────┬───────────┘
-                                    │
-                 ┌──────────────────┼──────────────────┐
-                 │                  │                  │
-                 ▼                  ▼                  ▼
-        ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
-        │ Static Engine  │ │ Runtime Engine │ │ Network Engine │
-        │                │ │                │ │                │
-        │ MobSF          │ │ Android        │ │ tcpdump        │
-        │ APKTool        │ │ Emulator       │ │ Wireshark      │
-        │ JADX           │ │ Frida          │ │ tshark         │
-        └───────┬────────┘ └───────┬────────┘ └───────┬────────┘
-                │                  │                  │
-                └──────────────────┼──────────────────┘
-                                   ▼
-                         ┌──────────────────────┐
-                         │ Evidence Normalizer  │
-                         │                      │
-                         │ Common Event Schema  │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │ Correlation Engine   │
-                         │                      │
-                         │ Entity Matching      │
-                         │ Temporal Matching    │
-                         │ Behavioral Rules     │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │ C2 Scoring Engine    │
-                         │                      │
-                         │ Evidence Weighting   │
-                         │ Confidence Score     │
-                         └──────────┬───────────┘
-                                    │
-                    ┌───────────────┼────────────────┐
-                    ▼               ▼                ▼
-             ┌────────────┐ ┌────────────┐ ┌──────────────┐
-             │ Evidence   │ │ IOC Store  │ │ C2 Timeline  │
-             │ Graph      │ │            │ │              │
-             └─────┬──────┘ └─────┬──────┘ └──────┬───────┘
-                   └───────────────┼───────────────┘
-                                   ▼
-                         ┌──────────────────────┐
-                         │     PostgreSQL       │
-                         └──────────────────────┘
-```
-
-The architecture follows the proposal's core flow of APK intake → static analysis → controlled runtime analysis → network capture → normalization → correlation → scoring → visualization/reporting. 
+Modern mobile threat investigation suffers from severe operational fragmentation:
+1. **Siloed Analysis Tools**: Malware analysts decompile APKs in isolation (using JADX, APKTool, or MobSF), while network defenders inspect Wireshark/PCAP captures in separate tools. Correlating a hardcoded bytecode string with an ephemeral outbound DNS lookup requires tedious, error-prone manual cross-referencing.
+2. **The "Black Box" Machine Learning Fallacy**: Many commercial tools present opaque risk scores (e.g. `"Risk = 87"`) generated by opaque statistical classifiers. In forensic and legal contexts, probabilistic guesswork without evidentiary proof is legally and scientifically inadmissible.
+3. **Evidence Contamination & Hallucination**: Uncalibrated correlation engines risk fabricating links between unrelated applications and ambient network traffic, leading to false positives and flawed incident conclusions.
 
 ---
 
-# 🔬 Analysis Pipeline
+## 3. The Solution & Core Innovation
 
-## 1. APK Intake
+E.M.I.T. introduces a **deterministic, evidence-weighted correlation platform**:
+* **The Common Evidence Model (CEM)**: Standardizes atomic indicators (`DOMAIN`, `IP`, `HASH`, `URL`, `PACKAGE`, `API`, `PERMISSION`) and links them directly to immutable, ground-truth observations with cryptographic SHA-256 custody.
+* **Deterministic 7-Rule Correlation Engine**: Replaces black-box machine learning with seven explainable, rule-based deductions. If an APK embeds `c2.malware.biz` and a PCAP queries `c2.malware.biz`, the engine establishes an evidence-backed link. If evidence does not match, **exact zero links are fabricated**.
+* **Zero Execution Sandbox Safety**: Untrusted APKs are never executed, emulated, or run on the host. PCAP analysis includes strict `-n` flags to eliminate live DNS resolution leakage.
+* **Ground-Truth vs. Inference Separation**: Strictly isolates indisputable observed facts from analytical deductions in the UI, attack graphs, and forensic reports.
 
-User uploads:
+---
 
-```text
-sample.apk
-```
-
-System records:
-
-```text
-SHA-256
-Filename
-Size
-Upload time
-Analysis ID
-```
-
-Each analysis receives a unique:
+## 4. Architecture & Data Flow
 
 ```text
-analysis_id
+       +--------------------------------------------------------------------+
+       |                   React 18 + TypeScript Frontend                   |
+       |  (12-Tab Forensic Workspace, React Flow Canvas, Report Center)     |
+       +---------------------------------+----------------------------------+
+                                         │  HTTP / REST JSON
+                                         ▼
+       +--------------------------------------------------------------------+
+       |                      FastAPI API Gateway & Auth                    |
+       |  (Schema Enforcement, Boundary Validation, Error Sanitization)     |
+       +---------------------------------+----------------------------------+
+                                         │
+                                         ▼
+       +--------------------------------------------------------------------+
+       |                     Orchestration Subsystem                        |
+       |               (AnalysisOrchestrator, Job Queue)                    |
+       +--------+------------------------+------------------------+---------+
+                │                        │                        │
+                ▼                        ▼                        ▼
+     [ Static APK Pipeline ]   [ PCAP Network Pipeline ]  [ Threat Intel ]
+     ├─ Androguard (Local)     ├─ Scapy Engine            ├─ VirusTotal
+     ├─ MobSF (Docker REST)    └─ Tshark Dissector (-n)   ├─ URLhaus
+     ├─ JADX Decompiler                                   ├─ AbuseIPDB
+     └─ APKTool Resource Parser                           └─ AlienVault OTX
+                │                        │                        │
+                └────────────────────────┼────────────────────────┘
+                                         ▼
+       +--------------------------------------------------------------------+
+       |                    Evidence Normalizer Subsystem                   |
+       |      (Common Evidence Model: Indicators, Observations, Hashes)     |
+       +---------------------------------+----------------------------------+
+                                         │
+                                         ▼
+       +--------------------------------------------------------------------+
+       |               Deterministic Correlation Engine (7 Rules)           |
+       |        (Evidence Linkage, Zero Machine Learning / Hallucination)   |
+       +---------------------------------+----------------------------------+
+                                         │
+                                         ▼
+       +--------------------------------------------------------------------+
+       |                 Attack Chain Reconstructor (DAG)                   |
+       |        (React Flow Nodes/Edges, Chronological Sequencing)          |
+       +---------------------------------+----------------------------------+
+                                         │
+                                         ▼
+       +--------------------------------------------------------------------+
+       |                Deterministic Risk & Explainability Engine          |
+       |      (Evidence Weighting, Ground-Truth Facts vs Inferences)        |
+       +---------------------------------+----------------------------------+
+                                         │
+                                         ▼
+       +--------------------------------------------------------------------+
+       |                    Investigation Report Generator                  |
+       |             (Dual Jinja2 HTML & ReportLab PDF Dossiers)            |
+       +---------------------------------+----------------------------------+
+                                         │
+                ┌────────────────────────┴────────────────────────┐
+                ▼                                                 ▼
+   +--------------------------+                      +--------------------------+
+   |   MongoDB Persistence    |                      |   Physical Storage       |
+   | (13 Collections, UUIDs)  |                      | (storage/ Encrypted Dir) |
+   +--------------------------+                      +--------------------------+
 ```
 
 ---
 
-## 2. Static Analysis
+## 5. Technology Stack
 
-Extract:
-
-```text
-Manifest
-Permissions
-Activities
-Services
-Receivers
-Providers
-URLs
-Domains
-IP addresses
-Network APIs
-Suspicious strings
-Native libraries
-Package information
-```
-
-Possible tools:
-
-* MobSF
-* JADX
-* APKTool
-* Androguard
-
-Output:
-
-```json
-{
-  "type": "static_domain",
-  "value": "example.com",
-  "source": "classes.dex",
-  "confidence": 0.4
-}
-```
+| Layer | Technologies |
+| :--- | :--- |
+| **Frontend UI** | React 18, TypeScript, Vite, Tailwind CSS, React Flow, Lucide React |
+| **Backend API** | FastAPI, Python 3.13.7, Pydantic v2, Uvicorn, Jinja2, ReportLab |
+| **Database** | MongoDB 7.0+ (PyMongo 4.8.0 repository pattern) |
+| **APK Engines** | Androguard 4.1.4, MobSF REST API, JADX, APKTool |
+| **PCAP Engines**| Scapy 2.7.0, Tshark (Wireshark suite with `-n` flag) |
+| **Threat Intel**| VirusTotal v3, URLhaus API, AbuseIPDB v2, AlienVault OTX |
+| **Testing** | Pytest 9.1 (83 backend tests), Vitest 4.1 (7 frontend tests) |
 
 ---
 
-# 3. Controlled Runtime Analysis
+## 6. Installation & Quick Start
 
-Execute the APK only inside an **isolated Android analysis environment**.
+### Prerequisites
+* **Python**: 3.13+ installed.
+* **Node.js**: v18+ (tested on v22.20.0) & npm.
+* **MongoDB**: Community Server running locally on port 27017 or a MongoDB Atlas cluster.
+* **Docker Desktop**: Optional, for containerized MobSF.
 
-Use:
+### Step 1: Clone Repository & Setup Backend
+```powershell
+# Clone repository
+git clone https://github.com/tanyajha29/E.M.I.T.git
+cd E.M.I.T
 
-* Android Emulator
-* Frida
-* ADB
-* Python automation
+# Navigate to backend
+cd backend
 
-Observe:
+# Create and activate virtual environment
+python -m venv venv
+.\venv\Scripts\Activate.ps1   # Windows PowerShell
+# source venv/bin/activate     # Linux / macOS
 
-```text
-Process creation
-API calls
-Network APIs
-Dynamic strings
-Runtime URLs
-DNS-related activity
-Suspicious behaviors
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment variables
+copy .env.example .env
+
+# Initialize MongoDB collections and indexes
+python scripts/init_mongodb.py
 ```
 
-Frida is used for controlled instrumentation of selected APIs and behaviors. 
+### Step 2: Setup Frontend
+```powershell
+# In a new terminal, navigate to frontend
+cd frontend
+
+# Install npm dependencies
+npm install
+
+# Configure frontend environment
+copy .env.example .env
+```
+
+### Step 3: Run the Application
+1. **Start Backend Server**:
+   ```powershell
+   cd backend
+   .\venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
+   ```
+   * REST API & Interactive Swagger UI: `http://localhost:8000/docs`
+2. **Start Frontend Client**:
+   ```powershell
+   cd frontend
+   npm run dev
+   ```
+   * Web Workspace: `http://localhost:5173`
 
 ---
 
-# 4. Network Analysis
+## 7. Configuration Guides
 
-Capture traffic generated during execution.
-
-Tools:
-
-* tcpdump
-* tshark
-* Wireshark
-* Python packet-processing libraries
-
-Extract:
-
-```text
-DNS queries
-Destination IPs
-Ports
-Protocols
-Connection timestamps
-Connection frequency
-TLS metadata
-Repeated connections
+### A. MongoDB Configuration (Authoritative Persistence)
+Configure `backend/.env`:
+```env
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB_NAME=emit_forensics
 ```
+*(Or use MongoDB Atlas connection string: `MONGO_URI=mongodb+srv://<user>:<pwd>@cluster0.mongodb.net/?appName=Cluster0`)*
 
-C2Trace should primarily focus on **metadata and behavior**, rather than attempting to decrypt arbitrary encrypted traffic.
+### B. Legacy Supabase Configuration Note
+> [!NOTE]
+> In early Phase 1 design, a relational Supabase/PostgreSQL schema was evaluated. However, **MongoDB was chosen as the permanent, official database for E.M.I.T.** starting in Phase 2 due to the polymorphic, deeply-nested JSON structures produced by APK decompilation and packet stream dissections. Supabase is **not used** in the current production implementation.
+
+### C. MobSF Configuration (Optional Containerized APK Analysis)
+1. Launch container:
+   ```powershell
+   docker run -d --name mobsf -p 8000:8000 opensecurity/mobile-security-framework-mobsf:latest
+   ```
+2. Retrieve API key from MobSF UI (`http://localhost:8000`).
+3. Set in `backend/.env`:
+   ```env
+   ENABLE_PROVIDER_MOBSF=true
+   MOBSF_URL=http://localhost:8000
+   MOBSF_API_KEY=your_mobsf_api_key
+   ```
 
 ---
 
-# 5. Evidence Normalization
+## 8. How to Use E.M.I.T.
 
-Different tools produce different formats.
+### How to Analyze an APK
+1. In the web interface, click **New Investigation** to create a case.
+2. Open the case and select the **Uploaded Evidence** tab.
+3. Upload target `.apk` file (file signature `PK\x03\x04` is automatically validated; cryptographic SHA-256 is computed).
+4. Navigate to **Analysis Jobs** and click **Run APK Static Analysis**.
+5. Inspect extracted package metadata, permissions, declared components, hardcoded domains/IPs, and flagged sensitive bytecode APIs (`DexClassLoader`, crypto ciphers, root detection).
 
-Convert everything into a common event structure:
+### How to Analyze a PCAP
+1. Within the same case workspace, upload a `.pcap` or `.pcapng` network trace.
+2. Navigate to **Analysis Jobs** and click **Run PCAP Network Analysis**.
+3. Inspect parsed Layer 4 conversations, DNS lookup transactions, resolved endpoint IPs, unencrypted HTTP requests, and detected periodic beaconing intervals.
 
-```text
-EvidenceEvent
+### How Correlation Works
+The **Deterministic Correlation Engine** evaluates the normalized observations across 7 formal rules:
+1. **Rule 1 (Domain Match)**: APK embedded domain == PCAP DNS query.
+2. **Rule 2 (IP Match)**: APK embedded IP == PCAP destination IP.
+3. **Rule 3 (Resolved IP Match)**: APK domain resolves to an IP subsequently targeted by an outbound TCP/UDP session.
+4. **Rule 4 (Capability Match)**: Declared Android permissions align with observed network traffic.
+5. **Rule 5 (Periodic Beaconing)**: Repetitive communication patterns ($\Delta t \pm 10\%$) directed toward APK-associated endpoints.
+6. **Rule 6 (Temporal Alignment)**: Authentic events occurring within a 1-hour temporal proximity.
+7. **Rule 7 (Multi-Source Corroboration)**: 3+ independent tools observing an indicator elevates relationship strength to `STRONG`.
 
-event_id
-analysis_id
-timestamp
-source
-event_type
-entity
-value
-process
-confidence
-metadata
-```
+### How Attack-Chain Reconstruction Works
+The `AttackChainReconstructor` transforms correlated observations into a visual graph:
+* **Nodes**: `APPLICATION`, `DOMAIN`, `IP`, `CAPABILITY`, `EVENT`, `THREAT_INTEL`.
+* **Edges**: `OBSERVED` (solid cyan), `CORRELATED` (amber dashed), `INFERRED` (purple dotted).
+* Every edge links directly to source evidence IDs and SHA-256 hashes.
+* Interactive drawer displays entity observations and deductive reasons upon clicking.
 
-Example:
+### How Evidence Is Preserved
+* Cryptographic SHA-256 hashes calculated immediately upon upload.
+* Duplicate uploads within a case context are rejected (HTTP 409 Conflict) to protect chain-of-custody.
+* Evidence files are stored in `storage/` using path-confinement and filename sanitizers that strip path traversal characters (`../../`).
+* Absolute host filesystem paths (`C:\Users\...`) are never leaked to clients or reports.
 
-```json
-{
-  "event_type": "network_connection",
-  "entity": "185.x.x.x",
-  "timestamp": "10:42:31",
-  "process": "com.example.app",
-  "source": "pcap"
-}
-```
-
----
-
-# 6. Cross-Layer Correlation ⭐
-
-This is the **core of C2Trace**.
-
-Correlate evidence using:
-
-### Entity correlation
-
-```text
-domain
-IP
-package
-process
-URL
-API
-```
-
-### Temporal correlation
-
-```text
-Static domain
-       ↓
-Runtime domain observed
-       ↓
-DNS query
-       ↓
-Network connection
-```
-
-### Behavioral correlation
-
-Look for patterns such as:
-
-```text
-Repeated connection
-Periodic beaconing
-Unexpected external endpoint
-Runtime-generated destination
-DNS → connection sequence
-```
+### How Risk Is Calculated
+The `RiskEngine` uses an **evidence-weighted deterministic scoring model** (0 to 100):
+* Accumulates weighted evidence points across 10+ categories (suspicious permissions, flagged reflection APIs, C2 domain matches, periodic beaconing, external threat intel).
+* Maps accumulated score to discrete tiers: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`.
+* Computes an evidence strength confidence index ($0.50 - 0.95$).
+* Displays a side-by-side breakdown: **Observed Ground-Truth Facts vs. Analytical Inferences**.
 
 ---
 
-# 7. C2 Scoring
+## 9. Important Limitations & Current Boundaries
 
-Generate an explainable score.
-
-Example:
-
-```text
-Static evidence             +2
-Runtime evidence            +3
-Network evidence            +3
-Temporal correlation        +2
-Repeated communication      +2
-                              ──
-                         Score: 12
-```
-
-The initial scoring system should remain transparent and rule-based.
-
-Later experiments can investigate whether different weighting strategies improve performance.
+1. **Passive Static Inspection**: Untrusted APKs are never executed. Statically hidden or encrypted runtime payloads (e.g. dynamic reflection from native `.so` libraries) cannot be observed without dynamic execution.
+2. **Encrypted Network Traffic (TLS 1.3)**: PCAP inspection parses Layer 3/4 headers and DNS lookups. Payload bodies of encrypted HTTPS sessions are opaque without an active MITM proxy certificate installed during capture.
+3. **Keepalive Heuristics**: Repetitive connections detect periodic intervals, but benign mobile keepalives (e.g. Firebase Cloud Messaging) can exhibit periodic patterns. Correlation with APK static bytecode is required to prove malice.
+4. **Threat Intelligence Quotas**: Public API rate limits (e.g. VirusTotal 4 req/min) may throttle high-volume queries. E.M.I.T. implements 24-hour caching and graceful degradation.
 
 ---
 
-# 8. Evidence Graph
+## 10. Explicitly Labeled Future Features (NOT Yet Implemented)
 
-The key UI feature:
+The following capabilities are **planned for future major releases** and are **NOT** present in the current production implementation:
 
-```text
-APK
- │
- ├──── Static Domain
- │           │
- │           ▼
- │      example.com
- │           │
- │           │ temporal match
- │           ▼
- ├──── Runtime Event
- │           │
- │           ▼
- │       DNS Query
- │           │
- │           ▼
- └──── Network Connection
-             │
-             ▼
-        C2 Hypothesis
-```
-
-The analyst should be able to click any node and see:
-
-```text
-What happened?
-When?
-Which tool observed it?
-Which process caused it?
-What other evidence supports it?
-Why did it contribute to the score?
-```
+* 🔮 **Machine Learning (ML)**: Future predictive classification models. *(Current implementation: 100% deterministic rules).*
+* 🔮 **Dynamic Analysis & Sandbox Execution**: Automated live container execution of APKs. *(Current implementation: strictly static analysis).*
+* 🔮 **Frida Dynamic Instrumentation**: Runtime hook injection to bypass SSL pinning. *(Current implementation: static string checks).*
+* 🔮 **Android Emulator Orchestration**: Integrated headless AVD/QEMU automation. *(Current implementation: ingestion of external PCAP captures).*
+* 🔮 **Advanced Behavioral Analysis**: Neural anomaly detection for mobile sensor telemetry. *(Current implementation: deterministic heuristic patterns).*
+* 🔮 **STIX/TAXII Threat Sharing**: Automated cyber threat intelligence feed synchronization. *(Current implementation: JSON API and HTML/PDF export).*
 
 ---
 
-# 🖥️ Dashboard
+## 11. Ethical Scope & Defensive Use Mandate
 
-### Overview
-
-```text
-Analysis: #A1024
-
-C2 Confidence
-      87%
-
-Static Evidence       12
-Runtime Evidence       8
-Network Evidence      15
-Correlations            7
-
-[ Evidence Graph ]
-
-[ Timeline ]
-
-[ IOCs ]
-
-[ Network ]
-
-[ Runtime ]
-
-[ Report ]
-```
-
-### Main pages
-
-```text
-Dashboard
-├── Analysis Overview
-├── Static Analysis
-├── Runtime Analysis
-├── Network Analysis
-├── Evidence Graph
-├── Timeline
-├── IOC Explorer
-├── C2 Findings
-└── Report
-```
+> [!IMPORTANT]
+> **Defensive Cybersecurity Mandate**:
+> * E.M.I.T. is designed exclusively for authorized defensive incident response and forensic investigation.
+> * Analysis MUST ONLY be performed on Android applications and network captures for which the investigator has explicit, legal authorization to analyze.
+> * E.M.I.T. contains **zero offensive capabilities**: no exploit payloads, no remote code execution, no C2 takeover, and no denial-of-service tools.
 
 ---
 
-# 🛠️ Tech Stack
-
-## Frontend
-
-```text
-React
-TypeScript
-Tailwind CSS
-Recharts / D3.js
-React Flow
-WebSocket
-```
-
-### Purpose
-
-* Dashboard
-* Evidence graph
-* Timeline
-* Network visualization
-* Real-time analysis status
-
----
-
-## Backend
-
-```text
-Python
-FastAPI
-Pydantic
-Celery / Redis
-WebSocket
-```
-
-### Purpose
-
-* API
-* Authentication
-* Analysis orchestration
-* Job management
-* Evidence processing
-* Correlation
-* Scoring
-
----
-
-## Malware Analysis
-
-```text
-MobSF
-JADX
-APKTool
-Androguard
-Frida
-ADB
-Android Emulator
-```
-
-The proposal specifically identifies MobSF, Frida, Android Emulator and related tooling as part of the intended implementation. 
-
----
-
-## Network
-
-```text
-tcpdump
-tshark
-Wireshark
-Scapy
-```
-
----
-
-## Database
-
-```text
-PostgreSQL
-```
-
-Store:
-
-```text
-Users
-Samples
-Analyses
-StaticEvidence
-RuntimeEvents
-NetworkEvents
-IOCs
-Correlations
-Findings
-Scores
-Reports
-```
-
----
-
-## Infrastructure
-
-```text
-Docker
-Docker Compose
-Linux
-Git/GitHub
-```
-
-The analysis environment should be isolated from the normal development environment.
-
----
-
-# 📁 Suggested Repository Structure
-
-```text
-c2trace/
-│
-├── frontend/
-│   ├── components/
-│   ├── pages/
-│   ├── graphs/
-│   ├── timeline/
-│   └── services/
-│
-├── backend/
-│   ├── api/
-│   ├── models/
-│   ├── schemas/
-│   ├── services/
-│   ├── workers/
-│   └── main.py
-│
-├── analyzers/
-│   ├── static/
-│   │   ├── mobsf/
-│   │   ├── jadx/
-│   │   └── apktool/
-│   │
-│   ├── runtime/
-│   │   ├── emulator/
-│   │   ├── frida/
-│   │   └── adb/
-│   │
-│   └── network/
-│       ├── capture/
-│       ├── parser/
-│       └── dns/
-│
-├── correlation/
-│   ├── normalizer/
-│   ├── entity_matcher/
-│   ├── temporal_matcher/
-│   └── rules/
-│
-├── scoring/
-│   ├── scorer.py
-│   └── rules.yaml
-│
-├── database/
-│   ├── migrations/
-│   └── schema/
-│
-├── reports/
-│
-├── tests/
-│
-├── docker/
-│
-├── docs/
-│
-└── README.md
-```
-
----
-
-# 🚀 Development Roadmap
-
-## Phase 0 — Research & Design
-
-**Week 1**
-
-* Finalize research question
-* Study MobSF / existing platforms
-* Define evidence schema
-* Define correlation rules
-* Define dataset strategy
-* Define evaluation metrics
-* Design architecture
-
-**Deliverable:** Architecture + research methodology
-
----
-
-## Phase 1 — Project Foundation
-
-**Week 2**
-
-Build:
-
-* Git repository
-* FastAPI backend
-* React frontend
-* PostgreSQL
-* Docker Compose
-* Authentication
-* Basic dashboard
-
-**Deliverable:**
-
-```text
-Login → Dashboard → Create Analysis
-```
-
----
-
-## Phase 2 — APK Intake + Static Analysis
-
-**Week 3–4**
-
-Implement:
-
-```text
-APK upload
-      ↓
-SHA-256
-      ↓
-MobSF
-      ↓
-Static evidence
-      ↓
-Database
-```
-
-Dashboard:
-
-```text
-APK information
-Permissions
-Domains
-URLs
-APIs
-Native libraries
-```
-
-**Deliverable:** Working static-analysis pipeline.
-
----
-
-## Phase 3 — Runtime Environment
-
-**Week 5–6**
-
-Set up:
-
-```text
-Android Emulator
-      ↓
-ADB
-      ↓
-APK installation
-      ↓
-Frida
-      ↓
-Runtime events
-```
-
-Implement controlled instrumentation.
-
-**Deliverable:** Runtime evidence collection.
-
----
-
-## Phase 4 — Network Analysis
-
-**Week 7**
-
-Implement:
-
-```text
-Emulator
-   ↓
-tcpdump
-   ↓
-PCAP
-   ↓
-tshark/Scapy
-   ↓
-Network events
-```
-
-Extract:
-
-* DNS
-* IP
-* ports
-* timestamps
-* connection frequency
-
-**Deliverable:** Network telemetry pipeline.
-
----
-
-# ⭐ Phase 5 — Cross-Layer Correlation
-
-**Week 8–9**
-
-This is the **most important phase**.
-
-Implement:
-
-```text
-Static
-   +
-Runtime
-   +
-Network
-   ↓
-Normalization
-   ↓
-Entity matching
-   ↓
-Temporal matching
-   ↓
-Behavioral rules
-   ↓
-Correlated evidence
-```
-
-**Deliverable:** C2 correlation engine.
-
----
-
-# ⭐ Phase 6 — Explainable Scoring
-
-**Week 10**
-
-Implement:
-
-```text
-Evidence
-   ↓
-Rules
-   ↓
-Score
-   ↓
-Confidence
-   ↓
-Explanation
-```
-
-Example:
-
-```text
-C2 Confidence: HIGH
-
-Reasons:
-✓ Runtime domain observed
-✓ DNS resolution detected
-✓ Connection followed within 3 seconds
-✓ Repeated communication detected
-✓ Static and runtime domains matched
-```
-
-**Deliverable:** Explainable C2 assessment.
-
----
-
-# 🎨 Phase 7 — Evidence Graph + Dashboard
-
-**Week 11**
-
-Build:
-
-* Evidence graph
-* Timeline
-* IOC explorer
-* Network view
-* Runtime events
-* C2 findings
-* Investigation view
-
-**Deliverable:** Complete analyst dashboard.
-
----
-
-# 🧪 Phase 8 — Evaluation
-
-**Week 12–13**
-
-Create a documented dataset containing:
-
-```text
-Benign samples
-Controlled malicious samples
-Different C2 patterns
-```
-
-Run:
-
-```text
-Experiment A
-Static only
-
-Experiment B
-Network only
-
-Experiment C
-Static + Runtime
-
-Experiment D
-Static + Runtime + Network
-```
-
-Measure:
-
-```text
-Precision
-Recall
-F1
-False Positive Rate
-```
-
-These experiments directly follow the evaluation design in your proposal. 
-
----
-
-# 📊 Phase 9 — Research Analysis
-
-**Week 14**
-
-Analyze:
-
-* Which layer catches what?
-* Which evidence is weak alone?
-* How much does correlation improve results?
-* Which rules produce false positives?
-* Which malware behaviors remain undetected?
-* Runtime limitations
-* Dataset limitations
-
-Create:
-
-```text
-Confusion matrices
-Performance tables
-Correlation examples
-Ablation results
-```
-
----
-
-# 📝 Phase 10 — Paper + Final Demo
-
-**Week 15–16**
-
-Complete:
-
-```text
-Research Paper
-│
-├── Abstract
-├── Introduction
-├── Related Work
-├── Architecture
-├── Methodology
-├── Correlation Model
-├── Experiments
-├── Results
-├── Limitations
-└── Conclusion
-```
-
-Final demo:
-
-```text
-Upload APK
-     ↓
-Static analysis
-     ↓
-Runtime execution
-     ↓
-Network capture
-     ↓
-Correlation
-     ↓
-C2 confidence
-     ↓
-Evidence graph
-     ↓
-Generate report
-```
-
----
-
-# 🧪 Evaluation Strategy
-
-The central experiment should remain:
-
-```text
-                    C2Trace
-                       │
-        ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
-     Static         Runtime        Network
-        │              │              │
-        └──────────────┼──────────────┘
-                       ▼
-                 CORRELATION
-                       │
-                       ▼
-                 C2 HYPOTHESIS
-```
-
-Compare:
-
-| Configuration              | Purpose             |
-| -------------------------- | ------------------- |
-| Static only                | Baseline            |
-| Network only               | Baseline            |
-| Static + Runtime           | Partial correlation |
-| Static + Runtime + Network | **Full C2Trace**    |
-
-Metrics:
-
-```text
-Precision
-Recall
-F1-score
-False Positive Rate
-```
-
-The proposal explicitly defines these evaluation dimensions. 
-
----
-
-# 🔐 Security & Ethics
-
-C2Trace must operate only in a controlled laboratory environment.
-
-### Rules
-
-* Only analyze APKs you are authorized to analyze.
-* Do not interact with live malicious C2 infrastructure.
-* Use isolated Android environments.
-* Keep malware execution away from personal/production systems.
-* Do not expose captured credentials or personal data.
-* Use controlled or documented datasets.
-* Clearly label experimental results.
-* Do not claim detection accuracy without measured evaluation.
-
-The proposal explicitly defines isolated execution and prohibits attacking live C2 infrastructure or third-party systems. 
-
----
-
-# 🎯 Final MVP
-
-If time becomes limited, **do not sacrifice the correlation engine to add more features.**
-
-The minimum successful C2Trace should be:
-
-```text
-        APK
-         │
-         ▼
-   Static Analysis
-         │
-         ├──────────┐
-         ▼          │
-   Runtime Analysis │
-         │          │
-         ├──────────┤
-         ▼          ▼
-    Network Capture
-         │
-         ▼
- Evidence Normalization
-         │
-         ▼
- Cross-Layer Correlation ⭐
-         │
-         ▼
- Explainable C2 Score ⭐
-         │
-         ▼
- Evidence Graph ⭐
-         │
-         ▼
-    Analyst Report
-```
-
-### **The three things we absolutely must get right:**
-
-**1. Evidence normalization**
-
-**2. Cross-layer + temporal correlation**
-
-**3. Explainable evidence graph**
-
-Everything else can be progressively added around those three.
-
----
-
-## 🏆 Project Definition
-
-> **C2Trace is an explainable Android malware-analysis platform that correlates static, runtime, and network evidence to identify and investigate C2-like behavior. Rather than replacing existing analysis tools, it orchestrates their outputs into a common evidence model, applies entity and temporal correlation, produces an interpretable C2 confidence assessment, and presents the resulting evidence as an analyst-friendly investigation graph.**
-
-That should be the **north star of the project**. If a feature doesn't contribute to that sentence, it should probably not be part of the MVP.
+## 12. Documentation Directory
+
+Detailed technical guides are available in the [`docs/`](docs/) directory:
+* [Architecture Specification](ARCHITECTURE.md)
+* [Development Setup](DEVELOPMENT_SETUP.md)
+* [Database Specification](docs/DATABASE.md)
+* [REST API Reference](docs/API.md)
+* [Analysis Pipelines](docs/ANALYSIS_PIPELINE.md)
+* [Common Evidence Model](docs/EVIDENCE_MODEL.md)
+* [Deterministic Correlation Engine](docs/CORRELATION_ENGINE.md)
+* [Attack Chain Reconstructor](docs/ATTACK_CHAIN.md)
+* [Threat Intelligence Integration](docs/THREAT_INTELLIGENCE.md)
+* [Security Policy & Threat Model](SECURITY.md)
+* [Testing & QA Strategy](docs/TESTING.md)
+* [Production Deployment](docs/DEPLOYMENT.md)
+* [Limitations & Future Roadmap](docs/LIMITATIONS.md)
+* [Phase Status Tracking](docs/PHASE_STATUS.md)
+* [Official Test Report](docs/TEST_REPORT.md)
