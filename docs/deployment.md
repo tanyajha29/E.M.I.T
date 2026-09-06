@@ -26,12 +26,12 @@ E.M.I.T. executes heavyweight, potentially untrusted forensic workloads inside a
 
 ```mermaid
 graph LR
-    subgraph Host System
+    subgraph HostSystem ["Host System"]
         HostBackend["FastAPI Backend<br/>(Port 8000)"]
         HostVault["Evidence Directory<br/>./data/evidence"]
     end
 
-    subgraph Docker Bridge Network
+    subgraph DockerBridgeNetwork ["Docker Bridge Network"]
         Container["Analysis Container (emit-mobsf)<br/>MobSF + TShark + JADX + APKTool"]
     end
 

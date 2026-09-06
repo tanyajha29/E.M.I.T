@@ -19,13 +19,13 @@ E.M.I.T. implements **100% deterministic correlation**:
 
 ```mermaid
 graph TD
-    subgraph Evidence Ingestion
+    subgraph EvidenceIngestion ["Evidence Ingestion"]
         APK["Android APK (Static AST / Manifest / DEX)"]
         PCAP["Network PCAP (TCP/UDP Streams / DNS / TLS)"]
         TI["Threat Intelligence Feeds (VT, URLhaus, AbuseIPDB, OTX)"]
     end
 
-    subgraph Correlation Rules
+    subgraph CorrelationRules ["Correlation Rules"]
         R1["Rule 1: APK_NETWORK_OVERLAP"]
         R2["Rule 2: SUSPICIOUS_PERMISSION_AND_BEHAVIOR"]
         R3["Rule 3: MALICIOUS_TI_OVERLAP"]
@@ -35,16 +35,27 @@ graph TD
         R7["Rule 7: EVASION_TECHNIQUE"]
     end
 
-    APK & PCAP --> R1
-    APK & PCAP --> R2
-    APK & TI --> R3
-    PCAP & TI --> R3
-    APK & PCAP --> R4
-    APK & PCAP --> R5
+    APK --> R1
+    PCAP --> R1
+    APK --> R2
+    PCAP --> R2
+    APK --> R3
+    PCAP --> R3
+    TI --> R3
+    APK --> R4
+    PCAP --> R4
+    APK --> R5
+    PCAP --> R5
     APK --> R6
     APK --> R7
 
-    R1 & R2 & R3 & R4 & R5 & R6 & R7 --> Risk["Evidence-Weighted Risk Engine (0-100)"]
+    R1 --> Risk["Evidence-Weighted Risk Engine (0-100)"]
+    R2 --> Risk
+    R3 --> Risk
+    R4 --> Risk
+    R5 --> Risk
+    R6 --> Risk
+    R7 --> Risk
 ```
 
 ---

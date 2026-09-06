@@ -65,11 +65,11 @@ E.M.I.T. delivers a unified, deterministic, and safe investigation environment:
 
 ```mermaid
 graph TB
-    subgraph Client Tier
+    subgraph ClientTier ["Client Tier"]
         UI["React 19 + TypeScript + Vite<br/>Cybersecurity Analyst Console"]
     end
 
-    subgraph Orchestration Tier
+    subgraph OrchestrationTier ["Orchestration Tier"]
         API["FastAPI Orchestrator (Port 8000)<br/>Async Jobs, REST Endpoints, Reporting"]
         CEM["Common Evidence Model (CEM) Normalizer"]
         Corr["Deterministic Correlation Engine (7 Rules)"]
@@ -77,12 +77,12 @@ graph TB
         DAG["DAG Attack Graph Reconstructor"]
     end
 
-    subgraph Analysis Runtime Tier
-        subgraph Local Execution
+    subgraph AnalysisRuntimeTier ["Analysis Runtime Tier"]
+        subgraph LocalExecution ["Local Execution"]
             AG["Androguard (DEX AST Parser)"]
             SC["Scapy (Python Packet Dissector)"]
         end
-        subgraph Docker Container: emit-mobsf (Port 8001)
+        subgraph DockerContainer ["Analysis Container: emit-mobsf (Port 8001)"]
             MS["MobSF REST API"]
             TS["TShark CLI (-n Safe Dissection)"]
             JX["JADX Decompiler"]
@@ -90,11 +90,11 @@ graph TB
         end
     end
 
-    subgraph Threat Intelligence
+    subgraph ThreatIntelligence ["Threat Intelligence"]
         TI["TI Broker with 24h Cache<br/>(VirusTotal, URLhaus, AbuseIPDB, AlienVault OTX)"]
     end
 
-    subgraph Persistence Tier
+    subgraph PersistenceTier ["Persistence Tier"]
         MDB[("MongoDB (13 Collections)<br/>Cases, Evidence, IOCs, Graphs, Reports")]
         Vault["Evidence Vault Storage<br/>(SHA-256 Path-Confined Storage)"]
     end
@@ -103,8 +103,12 @@ graph TB
     API --> Vault
     API --> MDB
     API --> CEM
-    CEM --> LocalExecution
-    CEM --> DockerContainer
+    CEM --> AG
+    CEM --> SC
+    CEM --> MS
+    CEM --> TS
+    CEM --> JX
+    CEM --> AP
     API --> Corr
     API --> Risk
     API --> DAG

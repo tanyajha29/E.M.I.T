@@ -22,11 +22,11 @@ The system comprises three primary execution tiers:
 
 ```mermaid
 graph TB
-    subgraph Client Tier
+    subgraph ClientTier ["Client Tier"]
         UI["React 19 + TypeScript + Vite<br/>(Tailwind CSS, Lucide, Cytoscape.js)"]
     end
 
-    subgraph Application Tier
+    subgraph ApplicationTier ["Application Tier"]
         API["FastAPI Orchestrator (Python 3.11+)<br/>Async Endpoints & Background Workers"]
         CEM["Common Evidence Model (CEM) Normalizer"]
         Engine["Deterministic Correlation Engine (7 Rules)"]
@@ -35,12 +35,12 @@ graph TB
         TI["Threat Intel Broker (VT, URLhaus, AbuseIPDB, OTX)"]
     end
 
-    subgraph Analysis Runtime Tier
-        subgraph Local Providers
+    subgraph AnalysisRuntimeTier ["Analysis Runtime Tier"]
+        subgraph LocalProviders ["Local Providers"]
             AG["Androguard (DEX/AST Parser)"]
             SC["Scapy (PCAP Dissector)"]
         end
-        subgraph Containerized Runtime (emit-mobsf)
+        subgraph ContainerizedRuntime ["Containerized Runtime (emit-mobsf)"]
             MO["MobSF REST API (Port 8001:8000)"]
             TS["TShark CLI (-n Safe Packet Dissection)"]
             JX["JADX (Decompiler)"]
@@ -48,7 +48,7 @@ graph TB
         end
     end
 
-    subgraph Persistence Tier
+    subgraph PersistenceTier ["Persistence Tier"]
         MDB[("MongoDB (13 Document Collections)<br/>Metadata, Evidence, Jobs, IOCs, Graphs")]
         FS["Evidence Vault (Local Disk)<br/>SHA-256 Structured Ingestion Storage"]
     end
@@ -57,8 +57,12 @@ graph TB
     API --> MDB
     API --> FS
     API --> CEM
-    CEM --> LocalProviders
-    CEM --> ContainerizedRuntime
+    CEM --> AG
+    CEM --> SC
+    CEM --> MO
+    CEM --> TS
+    CEM --> JX
+    CEM --> AP
     API --> Engine
     API --> Risk
     API --> GraphBuild
