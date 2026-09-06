@@ -1,11 +1,14 @@
 import os
 import sys
+from datetime import datetime
+from uuid import uuid4
 from pymongo import MongoClient
 
 # Add the backend root directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.config import settings
+from app.core.security import hash_password
 
 def init_db():
     print(f"Connecting to MongoDB at: {settings.MONGODB_URI}...")
@@ -22,6 +25,8 @@ def init_db():
     print(f"Using database: {settings.MONGODB_DATABASE}")
 
     collections = [
+        "users",
+        "sessions",
         "cases",
         "evidence_files",
         "apk_analyses",
@@ -49,8 +54,20 @@ def init_db():
     # Set up indexes (idempotent, existing index definitions are skipped or overwritten safely)
     print("Initializing indexes...")
     try:
+        # users index definitions
+        db.users.create_index("user_id", unique=True)
+        db.users.create_index("email", unique=True)
+        db.users.create_index("role")
+
+        # sessions index definitions
+        db.sessions.create_index("session_id", unique=True)
+        db.sessions.create_index("user_id")
+        db.sessions.create_index("expires_at", expireAfterSeconds=0)
+
         # cases index definitions
         db.cases.create_index("case_id", unique=True)
+        db.cases.create_index("owner_id")
+        db.cases.create_index("assigned_user_ids")
         db.cases.create_index("status")
         db.cases.create_index("created_at")
 
@@ -130,11 +147,62 @@ def init_db():
         print(f"Error creating indexes: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Report existing indexes for debugging verification
-    print("\nExisting indexes:")
-    for col in collections:
-        index_info = db[col].index_information()
-        print(f" - Collection {col}: {list(index_info.keys())}")
+    # Idempotent Admin Bootstrap
+    bootstrap_admin_id = None
+    if settings.INITIAL_ADMIN_EMAIL and settings.INITIAL_ADMIN_PASSWORD:
+        admin_email = settings.INITIAL_ADMIN_EMAIL.strip().lower()
+        existing_admin = db.users.find_one({"email": admin_email})
+        if not existing_admin:
+            bootstrap_admin_id = str(uuid4())
+            admin_user = {
+                "user_id": bootstrap_admin_id,
+                "email": admin_email,
+                "password_hash": hash_password(settings.INITIAL_ADMIN_PASSWORD),
+                "full_name": "System Administrator",
+                "role": "ADMIN",
+                "badge_id": "EMIT-ADMIN-0001",
+                "is_active": True,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+            db.users.insert_one(admin_user)
+            print(f"Bootstrap ADMIN created: {admin_email} (ID: {bootstrap_admin_id})")
+        else:
+            bootstrap_admin_id = existing_admin.get("user_id")
+            print(f"Bootstrap ADMIN already exists: {admin_email}")
+    else:
+        # Check if an existing admin exists
+        first_admin = db.users.find_one({"role": "ADMIN"})
+        if first_admin:
+            bootstrap_admin_id = first_admin.get("user_id")
+
+    # Idempotent Legacy Cases Migration:
+    # Any cases without owner_id should be safely assigned to the system administrator or default owner
+    target_owner_id = bootstrap_admin_id or "system_admin_legacy"
+    target_owner_name = "System Administrator" if bootstrap_admin_id else "Legacy System"
+    legacy_query = {
+        "$or": [
+            {"owner_id": {"$exists": False}},
+            {"owner_id": None},
+            {"owner_id": ""}
+        ]
+    }
+    legacy_count = db.cases.count_documents(legacy_query)
+    if legacy_count > 0:
+        print(f"Migrating {legacy_count} legacy case(s) without owner_id...")
+        result = db.cases.update_many(
+            legacy_query,
+            {
+                "$set": {
+                    "owner_id": target_owner_id,
+                    "owner_name": target_owner_name,
+                    "assigned_user_ids": []
+                }
+            }
+        )
+        print(f"Legacy cases migration complete: {result.modified_count} updated.")
+    else:
+        print("No legacy unowned cases found.")
 
     print("\nDatabase initialization complete.")
 

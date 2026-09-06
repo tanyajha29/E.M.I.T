@@ -1,85 +1,83 @@
-# E.M.I.T. Security Policy & Hardening Review
+# Security Policy & Defensive Architecture
 
-**Platform:** Evidence-backed Mobile Investigation Tool (E.M.I.T.)  
-**Version:** 1.0.0 (Phase 16 Hardening Review)  
-**Security Architecture Mandate:** Purely Defensive Forensic Platform
+This document outlines the security architecture, ethical usage policy, threat model, defensive controls, and vulnerability reporting procedures for **E.M.I.T.** (Evidence-backed Mobile Investigation Tool).
 
 ---
 
-## 1. Ethical Scope & Defensive Use Mandate
+## 1. Ethical Scope & Defensive Mandate
 
 E.M.I.T. is engineered exclusively as a **defensive digital forensics and incident response (DFIR) platform**.
 
 > [!IMPORTANT]
 > **Ethical Authorization Requirement**:
-> * Analysis MUST ONLY be performed on Android applications (`.apk`) and network captures (`.pcap`, `.pcapng`) for which the investigator or enterprise has explicit, written authorization to analyze.
-> * E.M.I.T. contains **zero offensive capabilities**: no exploit generation, no remote payload execution, no automated command-and-control hijacking, no privilege escalation payloads, and no denial-of-service capabilities.
-> * The tool is strictly designed to observe, correlate, reconstruct, assess, and report evidence.
+> - Analysis **MUST ONLY** be performed on Android applications (`.apk`) and network captures (`.pcap`, `.pcapng`) for which the investigator or enterprise has explicit, legal, and written authorization to analyze.
+> - E.M.I.T. contains **zero offensive capabilities**: no exploit payloads, no dynamic C2 hijacking, no device rooting or jailbreak exploits, and no denial-of-service functions.
+> - The platform operates strictly in an observational, investigative, and analytical capacity.
 
 ---
 
 ## 2. Threat Model
 
-### A. Primary Assets
-1. **Case Files & Investigation Records**: Sensitive forensic cases, notes, timestamps, and findings.
-2. **Evidence Binaries**: Suspicious APK binaries and raw network packet captures under investigation.
-3. **Extracted Forensic Artifacts**: Normalized IOCs, decompiled bytecode representations, IP addresses, domains.
-4. **External API Credentials**: API keys for VirusTotal, AbuseIPDB, and AlienVault OTX.
-5. **Database Records**: MongoDB persistent collections storing cases, observations, and reports.
+### Protected Assets
+1. **Case Records & Notes**: Sensitive investigation records, case tags, investigator identities, and investigative hypotheses.
+2. **Evidence Artifacts**: Potentially malicious APK packages, unpacked resources, and raw network packet captures.
+3. **Forensic Findings**: Extracted indicators of compromise (IOCs), normalized entity graphs, and generated PDF/HTML reports.
+4. **Third-Party API Secrets**: Integrations with external intelligence providers (VirusTotal, AbuseIPDB, URLhaus, AlienVault OTX, MobSF).
+5. **Database Storage**: MongoDB collections storing case metadata and graph relationships.
 
-### B. Adversary Profiles & Threats
-* **Malicious Evidence Crafting**:
-  * An adversary submits an APK or PCAP specifically crafted to exploit vulnerabilities in parsing libraries (e.g. ZIP slip, buffer overflows in Scapy/Tshark, decompression bombs, or regex DoS).
-* **Directory Traversal & Arbitrary File Overwrite**:
-  * An attacker supplies filenames with `../../` or Windows device names (`CON`, `PRN`, `AUX`) attempting to write outside the sandbox storage root.
-* **Malicious Runtime Execution**:
-  * Untrusted mobile malware attempting to execute code on the analysis host server.
-* **Data & Credential Exfiltration**:
-  * External threats attempting to inspect logs, API error messages, or network queries to harvest API keys or case intelligence.
-* **Network Query Information Leakage**:
-  * Automated tools issuing live DNS resolutions or external connections during PCAP inspection, alerting adversaries that their infrastructure is being investigated.
-
----
-
-## 3. Comprehensive Security Verification (17/17 Checklist)
-
-| # | Security Verification Requirement | Architectural Control & Mitigation | Verification Status |
-| :-: | :--- | :--- | :-: |
-| **1** | **Uploaded APKs are never executed** | All APK analysis is strictly static. Decompilation and parsing are performed via Androguard (Python AST/DEX parser), JADX, APKTool, and containerized MobSF. No emulator, dynamic sandbox, or `adb install` / `am start` is ever invoked. | **VERIFIED** |
-| **2** | **Uploaded PCAPs are handled safely** | Packet parsing uses Scapy in memory-bounded structures. Tshark is executed with the `-n` flag (no network name resolution) to prevent outbound DNS queries that could alert adversaries or leak internal host IPs. | **VERIFIED** |
-| **3** | **File type validation exists** | Magic-byte signature enforcement at the binary upload boundary in `EvidenceService`: APK must match `PK\x03\x04`; PCAP must match `\xd4\xc3\xb2\xa1` or `\xa1\xb2\xc3\xd4`; PCAPNG must match `\x0a\x0d\x0d\x0a`. Extensions alone are never trusted. | **VERIFIED** |
-| **4** | **File size limits exist** | Hard upload limit enforced server-side via `settings.MAX_EVIDENCE_SIZE_BYTES` (default 500 MB). Over-limit files are rejected with HTTP 400 before ingestion. | **VERIFIED** |
-| **5** | **SHA-256 cryptographic hashing exists** | Cryptographic SHA-256 hashes are calculated server-side from raw bytes upon upload. Client-provided hashes are never trusted. Duplicate hashes within the same case context are rejected with HTTP 409 Conflict to maintain chain-of-custody integrity. | **VERIFIED** |
-| **6** | **Path traversal is prevented** | `LocalStorageProvider` enforces path confinement. Filenames are stripped with `os.path.basename()` and canonicalized with `os.path.abspath()`. Any path attempting to escape `base_dir` triggers `PermissionError`. | **VERIFIED** |
-| **7** | **Secrets are not hardcoded** | All threat intelligence API keys (`VIRUSTOTAL_API_KEY`, `ABUSEIPDB_API_KEY`, `OTX_API_KEY`), MobSF keys, and database credentials are read dynamically via Pydantic `BaseSettings` from environment variables. | **VERIFIED** |
-| **8** | **.env is ignored** | Root `.gitignore` explicitly ignores `.env`, `backend/.env`, `frontend/.env`, `.env.local`, and test environment credential files. Verified via `git status --ignored`. | **VERIFIED** |
-| **9** | **Uploaded evidence is private** | All storage directories (`storage/`, `backend/storage/`) containing raw evidence binaries, decompiled assets, and compiled PDF reports are ignored by Git. Evidence files are only accessible via case-scoped authenticated APIs. | **VERIFIED** |
-| **10**| **External API keys are protected** | Keys are stored solely in backend memory/env. They are never sent to the React frontend, never returned in `/health` or `/cases` responses, and never logged in stdout or files. | **VERIFIED** |
-| **11**| **SQL/NoSQL injection is prevented** | Database access uses PyMongo repository abstractions with strongly typed Pydantic schemas. Query parameters are passed as structured dictionaries; string concatenation of queries is strictly prohibited. | **VERIFIED** |
-| **12**| **API errors do not expose secrets** | REST API endpoints catch unexpected exceptions, log full diagnostics internally, and return sanitized, generic error descriptions to API consumers. | **VERIFIED** |
-| **13**| **Internal filesystem paths are not leaked** | `LocalStorageProvider.save_file` returns relative paths (`storage/{uuid}_{filename}`) rather than absolute host filesystem paths (`C:\Users\...` or `/home/...`), preventing host directory disclosure in API responses and reports. | **VERIFIED** |
-| **14**| **Temporary analysis files are cleaned** | Orchestrators and providers execute in isolated, transient scopes. When metadata insertion fails, uploaded binary files are immediately unlinked to prevent orphaned files. | **VERIFIED** |
-| **15**| **Failed analysis leaves no unsafe artifacts**| Provider failures are caught and recorded as `ProviderStatus.FAILED`. Incomplete or corrupted runs are marked with `AnalysisStatus.FAILED` without generating unsupported graph edges or phantom correlations. | **VERIFIED** |
-| **16**| **User-controlled filenames are sanitized** | Filenames are sanitized with `re.sub(r'[^a-zA-Z0-9_.-]', '_', base)`. Null bytes (`\0`), colons, quotes, asterisks, question marks, and path delimiters are eliminated before filesystem creation. | **VERIFIED** |
-| **17**| **Logs do not contain secrets** | Loggers record operations, indicator values, and HTTP status codes, but omit authorization headers, Bearer tokens, and API secret strings. | **VERIFIED** |
+### Adversary Threats & Mitigation Vectors
+- **Malicious Evidence Crafting**:
+  - *Risk*: Malicious APKs or PCAPs crafted to exploit parser vulnerabilities (e.g., zip-slip in APK unpackers, memory corruption in packet dissectors, decompression bombs).
+  - *Mitigation*: Parsing executes in isolated container environments (`emit-mobsf`), memory-bounded Python processes, and path-confined extraction routines. Magic-byte inspection validates file headers prior to processing.
+- **Arbitrary File Overwrite & Path Traversal**:
+  - *Risk*: Filenames containing directory traversal sequences (`../../`) or reserved characters attempting to overwrite system files.
+  - *Mitigation*: Uploaded filenames are stripped via `os.path.basename`, sanitized with strict alphanumeric regex, and stored under UUID-prefixed paths confined strictly within the evidence vault.
+- **Malicious Host Execution**:
+  - *Risk*: Malware executing code directly on the host analysis server.
+  - *Mitigation*: Uploaded APK files are **never executed**. No emulator, dynamic sandbox, or `adb` runtime is invoked on the host. Analysis is purely static (AST decompilation, bytecode inspection, manifest parsing).
+- **DNS Leakage & Adversary Reconnaissance Alerting**:
+  - *Risk*: Automated network tools issuing live DNS lookups for domains found in PCAPs, alerting adversaries that their infrastructure is under investigation.
+  - *Mitigation*: TShark is executed with the `-n` parameter to disable live DNS resolution. External threat intelligence queries are proxied solely by the backend and cached locally for 24 hours.
 
 ---
 
-## 4. Accepted Limitations & Defensive Assumptions
+## 3. Core Security Controls
 
-1. **Host Antivirus / EDR Interference**:
-   * Storing live Android malware binaries in `storage/` may trigger host antivirus (e.g. Windows Defender) quarantine. In production SOC environments, the `storage/` volume should reside on an isolated volume or encrypted object store (e.g. AWS S3 with KMS or MinIO) with dedicated exclusions.
-2. **Encrypted Network Traffic (TLS 1.3)**:
-   * PCAP analysis inspects packet headers, DNS lookups, and TCP/UDP flow metadata. Payload inspection of encrypted HTTPS/TLS communication is not possible without an active intercepting MITM proxy certificate installed on the mobile device during capture.
-3. **Advanced Anti-Analysis & Dynamic Unpacking**:
-   * Heavy obfuscation (e.g. DexGuard, commercial packers, dynamic class loading via native libraries) may hide strings and domains from static analysis. E.M.I.T.'s correlation engine surfaces high-entropy and reflection API indicators to guide the analyst toward dynamic reverse engineering.
-4. **Third-Party Threat Intel Rate Limits**:
-   * Free-tier external threat intelligence APIs enforce strict rate limits (e.g. VirusTotal 4 requests/min). E.M.I.T. caches lookups for 24 hours and gracefully falls back to local observations when rate limits are encountered.
+| # | Security Control | Technical Implementation |
+| :-: | :--- | :--- |
+| **1** | **No Runtime APK Execution** | All APK analysis is strictly static via Androguard, MobSF REST API, JADX, and APKTool. No emulators or execution sandboxes run on the host. |
+| **2** | **Passive Network Dissection** | Packet inspection uses Scapy and TShark with `-n` flag (no DNS resolution), preventing adversary alerting. |
+| **3** | **Magic Byte Validation** | Binary headers are validated on upload (`PK\x03\x04` for APK, `\xd4\xc3\xb2\xa1` / `\xa1\xb2\xc3\xd4` for PCAP, `\x0a\x0d\x0d\x0a` for PCAPNG). Extensions alone are never trusted. |
+| **4** | **Enforced Upload Limits** | Enforced server-side via `MAX_EVIDENCE_SIZE_BYTES` (default 500 MB). Over-limit files are rejected with HTTP 400. |
+| **5** | **Cryptographic Hashing** | SHA-256, SHA-1, and MD5 hashes are generated from raw streams on upload. Client-provided hashes are disregarded. |
+| **6** | **Path Traversal Prevention** | Path confinement validates that all operations resolve within the evidence vault root directory; directory escapes trigger immediate exceptions. |
+| **7** | **No Hardcoded Secrets** | Credentials and API keys are loaded via Pydantic `BaseSettings` from environment variables. |
+| **8** | **Environment Files Ignored** | `.env`, `backend/.env`, and local credentials are systematically ignored in `.gitignore`. |
+| **9** | **Private Evidence Vault** | Local evidence directories and generated reports are excluded from version control and accessible only through authenticated APIs. |
+| **10** | **Credential Isolation** | External API keys are stored in server memory and never transmitted to the browser UI or returned in client payloads. |
+| **11** | **Parameterized Storage** | Database interactions use PyMongo abstraction repositories with strongly typed Pydantic models to prevent NoSQL injection. |
+| **12** | **Sanitized Error Handling** | API endpoints catch exceptions, write details to local diagnostic logs, and return sanitized error responses to clients. |
+| **13** | **Relative Path Exposure** | API responses reference relative paths or UUIDs rather than disclosing internal server directory hierarchies. |
+| **14** | **Filename Sanitization** | Uploaded file basenames are sanitized (`re.sub(r'[^a-zA-Z0-9_.-]', '_', base)`) and null bytes are rejected. |
+| **15** | **Failure Containment** | Provider failures set `status: FAILED` without leaving incomplete or corrupt records in the attack graph. |
+| **16** | **Safe Logging** | Application logs record operational telemetry while redacting bearer tokens, cookies, and secret API keys. |
+
+---
+
+## 4. Operational Considerations & Environment Assumptions
+
+1. **Host Antivirus / EDR Quarantining**:
+   Storing malicious Android binaries on disk may trigger host antivirus (e.g., Microsoft Defender) quarantine actions. In production SOC deployments, store the evidence vault on a dedicated encrypted volume or object storage with appropriate administrative exclusions.
+2. **Encrypted Network Traffic (TLS 1.3 / Certificate Pinning)**:
+   PCAP analysis inspects packet headers, DNS lookups, TCP/UDP streams, and TLS SNI handshakes. Payload inspection of encrypted TLS traffic is not performed unless a trusted intercepting proxy was deployed during the initial packet capture.
+3. **Advanced Anti-Analysis & Native Packers**:
+   Commercial packers or dynamic code loading may conceal payloads from static decompilation. E.M.I.T. identifies and flags evasion capabilities (Rule 7) to guide analysts toward targeted manual analysis.
 
 ---
 
 ## 5. Security Vulnerability Reporting
 
-If you discover a potential security vulnerability in E.M.I.T., please report it responsibly:
-* **Contact:** Security Response Team (`security@emit-forensics.local`)
-* **Policy:** Please provide detailed steps to reproduce. Do not disclose public vulnerabilities before a coordinated patch is released.
+If you identify a security issue or vulnerability in E.M.I.T., please disclose it responsibly:
+
+- **Contact**: `security@emit-forensics.local` (or submit a confidential issue on the repository)
+- **Policy**: Please include detailed reproduction steps and an impact assessment. Allow a reasonable remediation window prior to public disclosure.

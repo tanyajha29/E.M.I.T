@@ -39,10 +39,19 @@ class Settings(BaseSettings):
     THREAT_INTEL_TIMEOUT_SECONDS: int = 10
     
     # Execution timeouts
-    ANALYSIS_TIMEOUT_SECONDS: int = 30
+    ANALYSIS_TIMEOUT_SECONDS: int = 180
     
     # File upload constraints
     MAX_EVIDENCE_SIZE_BYTES: int = 500 * 1024 * 1024  # 500 MB limit
+    
+    # JWT Authentication & Session settings
+    JWT_SECRET_KEY: str = "emit_jwt_secret_key_change_in_production_e9c381a"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    
+    # Initial Admin Bootstrap (Optional via env)
+    INITIAL_ADMIN_EMAIL: Optional[str] = None
+    INITIAL_ADMIN_PASSWORD: Optional[str] = None
 
     @property
     def cors_origins_list(self) -> List[str]:

@@ -1,0 +1,12 @@
+# Dockerfile for E.M.I.T. Unified Analysis Container
+# Includes MobSF, JADX, APKTool, and TShark
+FROM opensecurity/mobile-security-framework-mobsf:latest
+
+USER root
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark libcap2-bin && \
+    setcap cap_net_raw,cap_net_admin+eip /usr/bin/dumpcap && \
+    pip install --no-cache-dir scapy && \
+    rm -rf /var/lib/apt/lists/*
+
+USER mobsf

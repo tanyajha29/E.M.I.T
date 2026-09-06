@@ -5,11 +5,51 @@ const client = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true,
 });
+
+// Attach Authorization Bearer token if present in localStorage
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem('emit_auth_token');
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Handle 401 Unauthorized responses (token expired or revoked)
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      localStorage.removeItem('emit_auth_token');
+      window.dispatchEvent(new CustomEvent('emit-auth-unauthorized'));
+    }
+    return Promise.reject(error);
+  }
+);
 
 // =====================================================================
 // TYPES & INTERFACES (Mapped directly to backend schemas)
 // =====================================================================
+
+export type UserRole = 'ADMIN' | 'INVESTIGATOR' | 'VIEWER';
+
+export interface User {
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: UserRole;
+  badge_id: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  user: User;
+}
 
 export interface DatabaseHealth {
   status: string;
@@ -28,6 +68,9 @@ export interface Case {
   name: string;
   description: string;
   status: CaseStatus;
+  owner_id?: string;
+  owner_name?: string;
+  assigned_user_ids?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -344,5 +387,33 @@ export const apiService = {
   getReportDownloadUrl: (caseId: string, reportId: string, format: 'html' | 'pdf'): string => {
     const baseURL = client.defaults.baseURL || 'http://localhost:8000';
     return `${baseURL}/cases/${caseId}/reports/${reportId}/download?format=${format}`;
+  },
+
+  // Case Assignment
+  assignCase: async (caseId: string, assignedUserIds: string[]): Promise<Case> => {
+    const res = await client.post<Case>(`/cases/${caseId}/assign`, { assigned_user_ids: assignedUserIds });
+    return res.data;
+  },
+
+  // Authentication
+  signup: async (data: { email: string; password: string; full_name: string }): Promise<TokenResponse> => {
+    const res = await client.post<TokenResponse>('/auth/signup', data);
+    return res.data;
+  },
+  login: async (data: { email: string; password: string }): Promise<TokenResponse> => {
+    const res = await client.post<TokenResponse>('/auth/login', data);
+    return res.data;
+  },
+  getMe: async (): Promise<User> => {
+    const res = await client.get<User>('/auth/me');
+    return res.data;
+  },
+  logout: async (): Promise<void> => {
+    await client.post('/auth/logout');
+  },
+  listUsers: async (): Promise<User[]> => {
+    const res = await client.get<User[]>('/auth/users');
+    return res.data;
   }
 };
+

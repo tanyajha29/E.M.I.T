@@ -78,18 +78,21 @@ class MobSFProvider(APKAnalysisProvider):
 
             upload_data = upload_res.json()
             mobsf_hash = upload_data.get("hash")
-            temp_name = upload_data.get("temp_name")
-            if not mobsf_hash or not temp_name:
-                raise KeyError(f"Missing hash or temp_name in upload response: {upload_data}")
+            temp_name = upload_data.get("temp_name") or upload_data.get("file_name", "")
+            if not mobsf_hash:
+                raise KeyError(f"Missing hash in upload response: {upload_data}")
 
             # 2. Trigger Scan
             logger.info(f"Triggering MobSF Scan for hash {mobsf_hash}...")
-            scan_payload = {"hash": mobsf_hash, "temp_name": temp_name}
+            scan_payload = {"hash": mobsf_hash}
+            if temp_name:
+                scan_payload["file_name"] = temp_name
+                scan_payload["temp_name"] = temp_name
             scan_res = httpx.post(
                 f"{settings.MOBSF_URL}/api/v1/scan",
                 headers=headers,
                 data=scan_payload,
-                timeout=60.0
+                timeout=120.0
             )
 
             if scan_res.status_code != 200:

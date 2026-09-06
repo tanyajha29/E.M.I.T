@@ -1,10 +1,29 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, BackgroundTasks, Query
+import os
+import re
+from datetime import datetime
+from uuid import uuid4
+from typing import List, Optional
+
+from fastapi import (
+    FastAPI, HTTPException, UploadFile, File, Depends, 
+    BackgroundTasks, Query, Request, Response, status
+)
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
 
 from app.core.config import settings
 from app.db.mongodb import db_helper
+
+# Security & Auth
+from app.core.security import (
+    hash_password, verify_password, create_access_token, decode_access_token,
+    extract_token, get_current_user, get_optional_current_user, require_role
+)
+from app.schemas.user import (
+    UserRole, UserCreate, UserLogin, UserOut, TokenResponse, CaseAssignmentUpdate
+)
+from app.db.repositories.user_repository import UserRepository
+from app.db.repositories.session_repository import SessionRepository
 
 # Services & Schemas
 from app.services.case_service import CaseService
@@ -68,6 +87,22 @@ def get_orchestrator():
 def get_run_repo():
     return AnalysisRunRepository()
 
+def validate_password_complexity(password: str) -> None:
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+    if not re.search(r"[A-Z]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter")
+    if not re.search(r"\d", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one number")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=\[\]\\/]", password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one special character")
+
+# =====================================================================
+# SYSTEM HEALTH ENDPOINTS
+# =====================================================================
+
 @app.get("/health")
 def health_check():
     db_ok = db_helper.check_health()
@@ -80,37 +115,197 @@ def health_check():
     }
 
 # =====================================================================
-# CASES CRUD ENDPOINTS
+# AUTHENTICATION & USER ENDPOINTS
+# =====================================================================
+
+@app.post("/auth/signup", response_model=TokenResponse, status_code=201)
+def signup(user_in: UserCreate, response: Response):
+    validate_password_complexity(user_in.password)
+    user_repo = UserRepository()
+    existing = user_repo.get_by_email(user_in.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user_id = str(uuid4())
+    badge_id = f"EMIT-IR-{user_id[:4].upper()}"
+    new_user = {
+        "user_id": user_id,
+        "email": user_in.email.strip().lower(),
+        "password_hash": hash_password(user_in.password),
+        "full_name": user_in.full_name.strip(),
+        # Public signups are strictly INVESTIGATOR role (never Admin)
+        "role": UserRole.INVESTIGATOR.value,
+        "badge_id": badge_id,
+        "is_active": True,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow()
+    }
+    user_repo.create_user(new_user)
+
+    token, session_id, expires_at = create_access_token(user_id, new_user["email"], UserRole.INVESTIGATOR.value)
+    session_repo = SessionRepository()
+    session_repo.create_session(session_id, user_id, token, expires_at)
+
+    response.set_cookie(
+        key="emit_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+
+    user_out = UserOut(
+        user_id=user_id,
+        email=new_user["email"],
+        full_name=new_user["full_name"],
+        role=UserRole.INVESTIGATOR,
+        badge_id=badge_id,
+        is_active=True,
+        created_at=new_user["created_at"]
+    )
+    return TokenResponse(access_token=token, token_type="bearer", user=user_out)
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(login_in: UserLogin, response: Response):
+    user_repo = UserRepository()
+    user = user_repo.get_by_email(login_in.email)
+    # Generic error prevents user enumeration
+    if not user or not verify_password(login_in.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+
+    user_id = user["user_id"]
+    role = user.get("role", UserRole.INVESTIGATOR.value)
+    token, session_id, expires_at = create_access_token(user_id, user["email"], role)
+
+    session_repo = SessionRepository()
+    session_repo.create_session(session_id, user_id, token, expires_at)
+
+    response.set_cookie(
+        key="emit_session",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+
+    user_out = UserOut(
+        user_id=user_id,
+        email=user["email"],
+        full_name=user.get("full_name", ""),
+        role=UserRole(role),
+        badge_id=user.get("badge_id", f"EMIT-IR-{user_id[:4].upper()}"),
+        is_active=user.get("is_active", True),
+        created_at=user.get("created_at", datetime.utcnow())
+    )
+    return TokenResponse(access_token=token, token_type="bearer", user=user_out)
+
+@app.get("/auth/me", response_model=UserOut)
+def get_me(current_user: UserOut = Depends(get_current_user)):
+    return current_user
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response, current_user: UserOut = Depends(get_current_user)):
+    token = extract_token(request)
+    if token:
+        payload = decode_access_token(token)
+        if payload and "jti" in payload:
+            SessionRepository().revoke_session(payload["jti"])
+    response.delete_cookie("emit_session")
+    return {"message": "Logged out successfully"}
+
+@app.get("/auth/users", response_model=List[UserOut])
+def list_users(current_user: UserOut = Depends(get_current_user)):
+    user_repo = UserRepository()
+    raw_users = user_repo.list_all_users()
+    users_out = []
+    for u in raw_users:
+        users_out.append(
+            UserOut(
+                user_id=u["user_id"],
+                email=u["email"],
+                full_name=u.get("full_name", ""),
+                role=UserRole(u.get("role", UserRole.INVESTIGATOR.value)),
+                badge_id=u.get("badge_id", f"EMIT-IR-{u['user_id'][:4].upper()}"),
+                is_active=u.get("is_active", True),
+                created_at=u.get("created_at", datetime.utcnow())
+            )
+        )
+    return users_out
+
+# =====================================================================
+# CASES CRUD ENDPOINTS (Strictly Isolated by User & Role)
 # =====================================================================
 
 @app.post("/cases", response_model=Case, status_code=201)
-def create_case(case_in: CaseCreate, service: CaseService = Depends(get_case_service)):
-    return service.create_case(case_in)
+def create_case(
+    case_in: CaseCreate,
+    service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    if current_user.role == UserRole.VIEWER:
+        raise HTTPException(status_code=403, detail="Viewers cannot create investigation cases")
+    return service.create_case(case_in, current_user)
 
 @app.get("/cases", response_model=List[Case])
-def get_all_cases(service: CaseService = Depends(get_case_service)):
-    return service.get_all_cases()
+def get_all_cases(
+    service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    return service.get_all_cases(current_user)
 
 @app.get("/cases/{case_id}", response_model=Case)
-def get_case(case_id: str, service: CaseService = Depends(get_case_service)):
-    case_obj = service.get_case(case_id)
+def get_case(
+    case_id: str,
+    service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_obj = service.get_case(case_id, current_user)
     if not case_obj:
+        # Anti-enumeration: 404 returned for unauthorized cases
         raise HTTPException(status_code=404, detail="Case not found")
     return case_obj
 
 @app.put("/cases/{case_id}", response_model=Case)
-def update_case(case_id: str, case_in: CaseUpdate, service: CaseService = Depends(get_case_service)):
-    updated_case = service.update_case(case_id, case_in)
+def update_case(
+    case_id: str,
+    case_in: CaseUpdate,
+    service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    service.verify_case_access(case_id, current_user, allow_viewer=False)
+    updated_case = service.update_case(case_id, case_in, current_user)
     if not updated_case:
         raise HTTPException(status_code=404, detail="Case not found")
     return updated_case
 
 @app.delete("/cases/{case_id}")
-def delete_case(case_id: str, service: CaseService = Depends(get_case_service)):
-    success = service.delete_case(case_id)
+def delete_case(
+    case_id: str,
+    service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    service.verify_case_access(case_id, current_user, allow_viewer=False)
+    success = service.delete_case(case_id, current_user)
     if not success:
         raise HTTPException(status_code=404, detail="Case not found")
     return {"message": "Case deleted successfully"}
+
+@app.post("/cases/{case_id}/assign", response_model=Case)
+def assign_case(
+    case_id: str,
+    assignment: CaseAssignmentUpdate,
+    service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    service.verify_case_access(case_id, current_user, allow_viewer=False)
+    updated_case = service.assign_case_users(case_id, assignment.assigned_user_ids, current_user)
+    if not updated_case:
+        raise HTTPException(status_code=404, detail="Case not found or permission denied")
+    return updated_case
 
 # =====================================================================
 # EVIDENCE METADATA & FILES ENDPOINTS
@@ -120,8 +315,11 @@ def delete_case(case_id: str, service: CaseService = Depends(get_case_service)):
 async def upload_evidence(
     case_id: str,
     file: UploadFile = File(...),
-    service: EvidenceService = Depends(get_evidence_service)
+    service: EvidenceService = Depends(get_evidence_service),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
 ):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
     try:
         content = await file.read()
         evidence = service.upload_evidence(
@@ -141,33 +339,56 @@ async def upload_evidence(
         raise HTTPException(status_code=500, detail=f"Evidence upload failed: {e}")
 
 @app.get("/cases/{case_id}/evidence", response_model=List[EvidenceFile])
-def get_all_evidence_for_case(case_id: str, service: EvidenceService = Depends(get_evidence_service)):
+def get_all_evidence_for_case(
+    case_id: str,
+    service: EvidenceService = Depends(get_evidence_service),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     return service.get_all_evidence_for_case(case_id)
 
 @app.get("/cases/{case_id}/evidence/{evidence_id}", response_model=EvidenceFile)
-def get_evidence(case_id: str, evidence_id: str, service: EvidenceService = Depends(get_evidence_service)):
+def get_evidence(
+    case_id: str,
+    evidence_id: str,
+    service: EvidenceService = Depends(get_evidence_service),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     evidence = service.get_evidence(case_id, evidence_id)
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence file metadata not found")
     return evidence
 
 @app.delete("/cases/{case_id}/evidence/{evidence_id}")
-def delete_evidence(case_id: str, evidence_id: str, service: EvidenceService = Depends(get_evidence_service)):
+def delete_evidence(
+    case_id: str,
+    evidence_id: str,
+    service: EvidenceService = Depends(get_evidence_service),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
     success = service.delete_evidence(case_id, evidence_id)
     if not success:
         raise HTTPException(status_code=404, detail="Evidence file not found")
     return {"message": "Evidence deleted successfully"}
 
 # =====================================================================
-# INDICATORS CRUD ENDPOINTS
+# INDICATORS, OBSERVATIONS & ATTACK GRAPH ENDPOINTS
 # =====================================================================
 
 @app.post("/cases/{case_id}/indicators", response_model=Indicator, status_code=201)
 def create_indicator(
     case_id: str, 
     indicator_in: IndicatorCreate, 
-    repo: IndicatorRepository = Depends(get_indicator_repo)
+    repo: IndicatorRepository = Depends(get_indicator_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
 ):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
     duplicate = repo.find_one({
         "case_id": case_id, 
         "type": indicator_in.type, 
@@ -187,24 +408,45 @@ def create_indicator(
     return Indicator(**inserted)
 
 @app.get("/cases/{case_id}/indicators", response_model=List[Indicator])
-def get_indicators_for_case(case_id: str, repo: IndicatorRepository = Depends(get_indicator_repo)):
+def get_indicators_for_case(
+    case_id: str,
+    repo: IndicatorRepository = Depends(get_indicator_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     list_dicts = repo.find_all({"case_id": case_id})
     return [Indicator(**d) for d in list_dicts]
 
 @app.get("/cases/{case_id}/observations", response_model=List[Observation])
-def get_observations_for_case(case_id: str):
+def get_observations_for_case(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     repo = ObservationRepository()
     list_dicts = repo.find_all({"case_id": case_id})
     return [Observation(**d) for d in list_dicts]
 
 @app.get("/cases/{case_id}/correlations", response_model=List[Correlation])
-def get_correlations_for_case(case_id: str):
+def get_correlations_for_case(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     repo = CorrelationRepository()
     list_dicts = repo.find_all({"case_id": case_id})
     return [Correlation(**d) for d in list_dicts]
 
 @app.get("/cases/{case_id}/graph")
-def get_attack_graph_for_case(case_id: str):
+def get_attack_graph_for_case(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     from app.services.attack_reconstructor import AttackChainReconstructor
     return AttackChainReconstructor.reconstruct(case_id)
 
@@ -218,8 +460,11 @@ def trigger_analysis(
     evidence_id: str,
     analysis_type: str = Query(..., pattern="^(APK|PCAP)$"),
     orchestrator: AnalysisOrchestrator = Depends(get_orchestrator),
-    run_repo: AnalysisRunRepository = Depends(get_run_repo)
+    run_repo: AnalysisRunRepository = Depends(get_run_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
 ):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
     try:
         analysis_id = orchestrator.run_analysis(case_id, evidence_id, analysis_type)
         run_record = run_repo.get_by_id(analysis_id)
@@ -236,8 +481,11 @@ def trigger_analysis(
 @app.get("/cases/{case_id}/analyses", response_model=List[AnalysisRun])
 def get_analyses_for_case(
     case_id: str,
-    run_repo: AnalysisRunRepository = Depends(get_run_repo)
+    run_repo: AnalysisRunRepository = Depends(get_run_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
 ):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     runs_list = run_repo.list_by_case(case_id)
     return [AnalysisRun(**r) for r in runs_list]
 
@@ -245,15 +493,154 @@ def get_analyses_for_case(
 def get_analysis_run(
     case_id: str,
     analysis_id: str,
-    run_repo: AnalysisRunRepository = Depends(get_run_repo)
+    run_repo: AnalysisRunRepository = Depends(get_run_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
 ):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     run_record = run_repo.get_by_id(analysis_id)
     if not run_record or run_record["case_id"] != case_id:
         raise HTTPException(status_code=404, detail="Analysis run not found")
     return AnalysisRun(**run_record)
 
 # =====================================================================
-# INTERNAL / TESTING ENDPOINTS (For Phase 2/3 Verification Only)
+# THREAT INTEL & RISK ASSESSMENT ENDPOINTS
+# =====================================================================
+
+@app.get("/cases/{case_id}/threat-intel", response_model=List[ThreatIntelligence])
+def get_threat_intel_for_case(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
+    repo = ThreatIntelRepository()
+    records = repo.find_all({"case_id": case_id})
+    return [ThreatIntelligence(**r) for r in records]
+
+@app.post("/cases/{case_id}/threat-intel/enrich", response_model=List[ThreatIntelligence])
+def trigger_case_threat_intel_enrichment(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
+    from app.services.threat_intel import ThreatIntelService
+    service = ThreatIntelService()
+    return service.enrich_case(case_id)
+
+@app.get("/cases/{case_id}/risk", response_model=RiskAssessment)
+def get_risk_assessment_for_case(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
+    from app.services.risk_engine import RiskEngine
+    repo = RiskRepository()
+    existing = repo.find_one({"case_id": case_id})
+    if existing:
+        return RiskAssessment(**existing)
+    return RiskEngine.assess(case_id)
+
+@app.post("/cases/{case_id}/risk/assess", response_model=RiskAssessment)
+def trigger_case_risk_assessment(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
+    from app.services.risk_engine import RiskEngine
+    return RiskEngine.assess(case_id)
+
+# =====================================================================
+# REPORT GENERATION & DOWNLOAD ENDPOINTS
+# =====================================================================
+
+@app.post("/cases/{case_id}/reports/generate", response_model=Report, status_code=201)
+def generate_case_report(
+    case_id: str,
+    format: str = Query("BOTH", description="Report format: HTML, PDF, or BOTH"),
+    title: str = Query("E.M.I.T. Forensic Investigation Report", description="Custom report title"),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
+    from app.services.report_generator import ReportGeneratorService
+    from app.schemas.report import ReportFormat
+    try:
+        rep_fmt = ReportFormat(format.upper())
+    except ValueError:
+        rep_fmt = ReportFormat.BOTH
+
+    try:
+        report = ReportGeneratorService.generate_report(case_id=case_id, report_format=rep_fmt, title=title)
+        return report
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+
+@app.get("/cases/{case_id}/reports", response_model=List[Report])
+def list_case_reports(
+    case_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
+    repo = ReportRepository()
+    records = repo.find_all({"case_id": case_id})
+    return [Report(**r) for r in records]
+
+@app.get("/cases/{case_id}/reports/{report_id}", response_model=Report)
+def get_case_report(
+    case_id: str,
+    report_id: str,
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
+    repo = ReportRepository()
+    record = repo.find_one({"case_id": case_id, "report_id": report_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return Report(**record)
+
+@app.get("/cases/{case_id}/reports/{report_id}/download")
+def download_case_report(
+    case_id: str,
+    report_id: str,
+    format: str = Query("html"),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=True)
+    repo = ReportRepository()
+    record = repo.find_one({"case_id": case_id, "report_id": report_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    fmt = format.lower()
+    if fmt == "pdf":
+        file_path = record.get("pdf_path")
+        media_type = "application/pdf"
+        filename = f"report_{case_id[:8]}_{report_id[:8]}.pdf"
+    else:
+        file_path = record.get("html_path")
+        media_type = "text/html"
+        filename = f"report_{case_id[:8]}_{report_id[:8]}.html"
+
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"Report file in {format.upper()} format not available on disk")
+
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename
+    )
+
+# =====================================================================
+# INTERNAL / TESTING PIPELINE ENDPOINTS
 # =====================================================================
 
 @app.post("/api/v1/internal/observations", response_model=Observation, status_code=201)
@@ -341,18 +728,6 @@ def create_internal_analysis(analysis_in: AnalysisCreate):
     inserted = repo.insert_one(analysis_data.model_dump())
     return Analysis(**inserted)
 
-@app.get("/cases/{case_id}/threat-intel", response_model=List[ThreatIntelligence])
-def get_threat_intel_for_case(case_id: str):
-    repo = ThreatIntelRepository()
-    records = repo.find_all({"case_id": case_id})
-    return [ThreatIntelligence(**r) for r in records]
-
-@app.post("/cases/{case_id}/threat-intel/enrich", response_model=List[ThreatIntelligence])
-def trigger_case_threat_intel_enrichment(case_id: str):
-    from app.services.threat_intel import ThreatIntelService
-    service = ThreatIntelService()
-    return service.enrich_case(case_id)
-
 @app.post("/api/v1/internal/threat-intel", response_model=ThreatIntelligence, status_code=201)
 def create_internal_threat_intel(intel_in: ThreatIntelligenceCreate):
     repo = ThreatIntelRepository()
@@ -372,21 +747,6 @@ def create_internal_threat_intel(intel_in: ThreatIntelligenceCreate):
     )
     inserted = repo.insert_one(intel_data.model_dump())
     return ThreatIntelligence(**inserted)
-
-@app.get("/cases/{case_id}/risk", response_model=RiskAssessment)
-def get_risk_assessment_for_case(case_id: str):
-    from app.services.risk_engine import RiskEngine
-    repo = RiskRepository()
-    existing = repo.find_one({"case_id": case_id})
-    if existing:
-        return RiskAssessment(**existing)
-    # Generate on demand
-    return RiskEngine.assess(case_id)
-
-@app.post("/cases/{case_id}/risk/assess", response_model=RiskAssessment)
-def trigger_case_risk_assessment(case_id: str):
-    from app.services.risk_engine import RiskEngine
-    return RiskEngine.assess(case_id)
 
 @app.post("/api/v1/internal/risk-assessments", response_model=RiskAssessment, status_code=201)
 def create_internal_risk_assessment(risk_in: RiskAssessmentCreate):
@@ -411,68 +771,6 @@ def create_internal_risk_assessment(risk_in: RiskAssessmentCreate):
     )
     inserted = repo.insert_one(risk_data.model_dump())
     return RiskAssessment(**inserted)
-
-@app.post("/cases/{case_id}/reports/generate", response_model=Report, status_code=201)
-def generate_case_report(
-    case_id: str,
-    format: str = Query("BOTH", description="Report format: HTML, PDF, or BOTH"),
-    title: str = Query("E.M.I.T. Forensic Investigation Report", description="Custom report title")
-):
-    from app.services.report_generator import ReportGeneratorService
-    from app.schemas.report import ReportFormat
-    try:
-        rep_fmt = ReportFormat(format.upper())
-    except ValueError:
-        rep_fmt = ReportFormat.BOTH
-
-    try:
-        report = ReportGeneratorService.generate_report(case_id=case_id, report_format=rep_fmt, title=title)
-        return report
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
-
-@app.get("/cases/{case_id}/reports", response_model=List[Report])
-def list_case_reports(case_id: str):
-    repo = ReportRepository()
-    records = repo.find_all({"case_id": case_id})
-    return [Report(**r) for r in records]
-
-@app.get("/cases/{case_id}/reports/{report_id}", response_model=Report)
-def get_case_report(case_id: str, report_id: str):
-    repo = ReportRepository()
-    record = repo.find_one({"case_id": case_id, "report_id": report_id})
-    if not record:
-        raise HTTPException(status_code=404, detail="Report not found")
-    return Report(**record)
-
-@app.get("/cases/{case_id}/reports/{report_id}/download")
-def download_case_report(case_id: str, report_id: str, format: str = Query("html")):
-    import os
-    repo = ReportRepository()
-    record = repo.find_one({"case_id": case_id, "report_id": report_id})
-    if not record:
-        raise HTTPException(status_code=404, detail="Report not found")
-
-    fmt = format.lower()
-    if fmt == "pdf":
-        file_path = record.get("pdf_path")
-        media_type = "application/pdf"
-        filename = f"report_{case_id[:8]}_{report_id[:8]}.pdf"
-    else:
-        file_path = record.get("html_path")
-        media_type = "text/html"
-        filename = f"report_{case_id[:8]}_{report_id[:8]}.html"
-
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"Report file in {format.upper()} format not available on disk")
-
-    return FileResponse(
-        path=file_path,
-        media_type=media_type,
-        filename=filename
-    )
 
 @app.post("/api/v1/internal/reports", response_model=Report, status_code=201)
 def create_internal_report(report_in: ReportCreate):

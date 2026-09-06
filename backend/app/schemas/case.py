@@ -24,5 +24,8 @@ class CaseUpdate(BaseModel):
 class Case(CaseBase):
     case_id: str = Field(default_factory=lambda: str(uuid4()))
     status: CaseStatus = CaseStatus.OPEN
+    owner_id: str | None = None
+    owner_name: str | None = None
+    assigned_user_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

@@ -156,16 +156,21 @@ def test_provider_timeout_handling(test_env_setup):
 def test_placeholder_safety_policy(test_env_setup):
     case_id, evidence_id, _ = test_env_setup
 
-    # Trigger run
-    client.post(f"/cases/{case_id}/evidence/{evidence_id}/analyze?analysis_type=APK")
+    # When providers are unavailable, system must never synthesize fake placeholder observations
+    with patch("app.services.providers.jadx.JADXProvider.is_available", return_value=False), \
+         patch("app.services.providers.apktool.APKToolProvider.is_available", return_value=False), \
+         patch("app.services.providers.mobsf.MobSFProvider.is_available", return_value=False), \
+         patch("app.services.providers.androguard.AndroguardProvider.is_available", return_value=False):
+        # Trigger run
+        client.post(f"/cases/{case_id}/evidence/{evidence_id}/analyze?analysis_type=APK")
 
-    # Assert no fake documents created in observations, correlations, attack graph collections
-    from app.db.mongodb import db_helper
-    assert db_helper.db["observations"].count_documents({}) == 0
-    assert db_helper.db["correlations"].count_documents({}) == 0
-    assert db_helper.db["attack_nodes"].count_documents({}) == 0
-    assert db_helper.db["attack_edges"].count_documents({}) == 0
-    assert db_helper.db["risk_assessments"].count_documents({}) == 0
+        # Assert no fake documents created in observations, correlations, attack graph collections
+        from app.db.mongodb import db_helper
+        assert db_helper.db["observations"].count_documents({"case_id": case_id}) == 0
+        assert db_helper.db["correlations"].count_documents({"case_id": case_id}) == 0
+        assert db_helper.db["attack_nodes"].count_documents({"case_id": case_id}) == 0
+        assert db_helper.db["attack_edges"].count_documents({"case_id": case_id}) == 0
+        assert db_helper.db["risk_assessments"].count_documents({"case_id": case_id}) == 0
 
 def test_duplicate_analysis_prevention(test_env_setup):
     case_id, evidence_id, _ = test_env_setup

@@ -1,0 +1,21 @@
+services:
+  mobsf:
+    image: emit-analysis:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.analysis
+    container_name: emit-mobsf
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - MOBSF_API_KEY=emit_mobsf_secret_api_key_2026
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s

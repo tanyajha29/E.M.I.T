@@ -2,7 +2,7 @@ import logging
 import time
 import os
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from app.core.config import settings
@@ -73,9 +73,32 @@ class AnalysisOrchestrator:
             "analysis_type": analysis_type,
             "status": {"$in": ["PENDING", "RUNNING", "PARTIAL"]}  # Check active statuses
         })
-        # If any run has incomplete stage, we block duplicate executions
+        now = datetime.utcnow()
         for r in active_runs:
             if r["current_stage"] not in ["COMPLETED", "FAILED"]:
+                # Check for stale orphaned runs from a previous server restart or crash
+                started_at = r.get("started_at")
+                if started_at:
+                    if isinstance(started_at, str):
+                        try:
+                            started_at = datetime.fromisoformat(started_at)
+                        except Exception:
+                            started_at = None
+                    elif isinstance(started_at, (int, float)):
+                        started_at = datetime.utcfromtimestamp(started_at)
+
+                timeout_limit = getattr(settings, "ANALYSIS_TIMEOUT_SECONDS", 180)
+                if started_at and (now - started_at).total_seconds() > timeout_limit:
+                    logger.warning(f"Reaping stale analysis run {r['analysis_id']} (started {started_at})")
+                    self.run_repo.complete(
+                        r["analysis_id"],
+                        AnalysisStatus.FAILED.value,
+                        now,
+                        errors=["Analysis timed out or worker was interrupted by server restart"],
+                        warnings=[]
+                    )
+                    continue
+
                 raise DuplicateAnalysisError(f"Analysis run already in progress for evidence {evidence_id}")
 
         # 3. Create AnalysisRun record in MongoDB as PENDING
@@ -139,12 +162,14 @@ class AnalysisOrchestrator:
             if not provider.is_enabled():
                 record = ProviderExecutionRecord(
                     provider=name,
+                    provider_version=provider.version,
                     status=ProviderStatus.DISABLED,
                     output_metadata={"tool_version": provider.version}
                 )
             elif not provider.is_configured():
                 record = ProviderExecutionRecord(
                     provider=name,
+                    provider_version=provider.version,
                     status=ProviderStatus.NOT_CONFIGURED,
                     error=f"Provider {name} is not configured",
                     output_metadata={"tool_version": provider.version}
@@ -152,6 +177,7 @@ class AnalysisOrchestrator:
             elif not provider.is_available():
                 record = ProviderExecutionRecord(
                     provider=name,
+                    provider_version=provider.version,
                     status=ProviderStatus.UNAVAILABLE,
                     error=f"Provider {name} is unavailable",
                     output_metadata={"tool_version": provider.version}

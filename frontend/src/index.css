@@ -1,3 +1,86 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --emit-bg-primary: #000000;
+  --emit-bg-secondary: #101010;
+  --emit-surface: #101010;
+  --emit-surface-elevated: #181818;
+  --emit-border: #222222;
+  --emit-green: #00FF00;
+  --emit-orange: #FF8800;
+  --emit-purple: #BB88FF;
+  --emit-red: #FF3333;
+  --emit-text: #FFFFFF;
+  --emit-text-dim: #AAAAAA;
+}
+
+/* Custom cyber-analyst slim scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #181818;
+  border-radius: 2px;
+  border: 1px solid #222222;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00FF00;
+}
+
+/* Cyber focus state */
+*:focus-visible {
+  outline: 1px solid #00FF00;
+  outline-offset: 1px;
+}
+
+/* Subtle pulsating neon animations */
+@keyframes neon-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 6px #00FF00;
+  }
+  50% {
+    opacity: 0.5;
+    box-shadow: 0 0 2px #00FF00;
+  }
+}
+
+.animate-neon-pulse {
+  animation: neon-pulse 2s infinite ease-in-out;
+}
+
+/* Global grid entrance fade-in */
+@keyframes grid-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-grid-entrance {
+  animation: grid-fade-in 0.35s ease-out forwards;
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

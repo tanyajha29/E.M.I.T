@@ -6,12 +6,21 @@ import {
   Search, 
   SlidersHorizontal, 
   FolderOpen, 
-  AlertTriangle, 
   Loader2,
-  X
+  X,
+  ArrowRight,
+  Calendar,
+  Shield,
+  Filter
 } from 'lucide-react';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import { LoadingSkeleton } from '../components/ui/LoadingSkeleton';
+import { ErrorState } from '../components/ui/ErrorState';
+import { EmptyState } from '../components/ui/EmptyState';
+import { useUser } from '../context/UserContext';
 
-const Investigations: React.FC = () => {
+export const Investigations: React.FC = () => {
+  const { currentUser, filterMode, setFilterMode, isCaseAssigned } = useUser();
   const [cases, setCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -49,7 +58,7 @@ const Investigations: React.FC = () => {
   const handleCreateCase = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCaseName.trim()) {
-      setModalError('Case name is required');
+      setModalError('Case name is required.');
       return;
     }
 
@@ -64,20 +73,26 @@ const Investigations: React.FC = () => {
       setNewCaseName('');
       setNewCaseDesc('');
       setIsModalOpen(false);
-      fetchCases();
+      await fetchCases();
     } catch (err: any) {
       console.error('Create case failed:', err);
-      setModalError(err.response?.data?.detail || 'Unable to create case. Try again.');
+      setModalError(err.response?.data?.detail || 'Unable to register case dossier. Try again.');
     } finally {
       setModalLoading(false);
     }
   };
 
+  // User-scoped cases
+  const scopedCases = filterMode === 'MY_CASES'
+    ? cases.filter(c => isCaseAssigned(c.case_id))
+    : cases;
+
   // Filter & Sort cases list
-  const filteredCases = cases
+  const filteredCases = scopedCases
     .filter(c => {
       const matchSearch = c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        c.description.toLowerCase().includes(searchTerm.toLowerCase());
+        c.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        c.case_id.toLowerCase().includes(searchTerm.toLowerCase());
       const matchStatus = statusFilter === 'ALL' || c.status === statusFilter;
       return matchSearch && matchStatus;
     })
@@ -91,196 +106,262 @@ const Investigations: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3">
-        <Loader2 className="h-8 w-8 text-cyan-400 animate-spin" />
-        <span className="text-sm font-semibold tracking-wider text-slate-400 uppercase">Resolving Cases...</span>
+      <div className="space-y-6 font-mono">
+        <div className="flex justify-between items-center">
+          <div className="h-6 w-48 bg-[#181818] rounded animate-pulse" />
+          <div className="h-4 w-72 bg-[#181818] rounded animate-pulse" />
+        </div>
+        <LoadingSkeleton type="card" rows={6} />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="border border-red-950 bg-red-950/20 p-6 rounded flex items-start gap-4">
-        <AlertTriangle className="h-6 w-6 text-red-500 shrink-0 mt-0.5" />
-        <div>
-          <h3 className="text-md font-bold text-red-400 uppercase tracking-wider">Loading Failed</h3>
-          <p className="text-sm text-slate-400 mt-1">Could not retrieve cases from E.M.I.T. servers. Check server status.</p>
-          <button 
-            onClick={fetchCases}
-            className="mt-4 px-4 py-2 border border-red-800 text-red-400 hover:bg-red-900/20 text-xs font-bold uppercase rounded transition-colors"
-          >
-            Retry Connection
-          </button>
-        </div>
-      </div>
+      <ErrorState
+        title="Investigations Store Inaccessible"
+        message="Could not retrieve forensic case files from the E.M.I.T. server. Verify backend connectivity."
+        onRetry={fetchCases}
+      />
     );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header and Action */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="space-y-6 font-mono text-white">
+      {/* Header and Primary Action */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 p-4 rounded bg-[#101010] border border-[#222222]">
         <div>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Active System Case Files</p>
+          <div className="flex items-center gap-2">
+            <Shield className="h-4 w-4 text-[#00FF00]" />
+            <h2 className="text-base font-bold tracking-wider uppercase text-white">
+              Forensic Investigations Dossier
+            </h2>
+          </div>
+          <p className="text-xs text-[#AAAAAA] mt-1">
+            {filterMode === 'MY_CASES' ? (
+              <span className="text-[#00FF00]">
+                (Showing only your assigned investigations — Investigator: {currentUser.name})
+              </span>
+            ) : (
+              <span>(Showing all system investigations)</span>
+            )}
+          </p>
         </div>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-slate-950 text-xs font-bold uppercase tracking-wider rounded transition-colors"
-        >
-          <Plus className="h-4 w-4" /> New Case File
-        </button>
+
+        <div className="flex items-center gap-3">
+          {/* Scope toggle */}
+          <button
+            onClick={() => setFilterMode(filterMode === 'MY_CASES' ? 'ALL_CASES' : 'MY_CASES')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#181818] hover:bg-[#222222] border border-[#222222] hover:border-[#00FF00]/40 text-xs text-[#AAAAAA] hover:text-[#00FF00] transition-colors"
+          >
+            <Filter className="h-3 w-3 text-[#00FF00]" />
+            <span>{filterMode === 'MY_CASES' ? 'My Assigned' : 'All Cases'}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setModalError(null);
+              setIsModalOpen(true);
+            }}
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-[#00FF00] hover:bg-[#00DD00] text-black text-xs font-bold uppercase tracking-wider rounded transition-all shadow-[0_0_12px_rgba(0,255,0,0.3)]"
+          >
+            <Plus className="h-4 w-4" />
+            <span>New Investigation</span>
+          </button>
+        </div>
       </div>
 
-      {/* Filters toolbar */}
-      <div className="bg-slate-900 border border-slate-800 rounded p-4 flex flex-col md:flex-row gap-4 items-center">
+      {/* Filters & Search Toolbar */}
+      <div className="bg-[#101010] border border-[#222222] rounded p-4 flex flex-col md:flex-row gap-4 items-center justify-between text-xs">
         {/* Search */}
         <div className="relative flex-1 w-full">
-          <Search className="absolute left-3 top-2.5 h-4.5 w-4.5 text-slate-500" />
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#666666]" />
           <input
             type="text"
-            placeholder="Search by case file name or description..."
+            placeholder="Search case name, description, or UUID..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded focus:outline-none focus:border-cyan-500 transition-colors placeholder:text-slate-600"
+            className="w-full pl-9 pr-4 py-2 bg-[#0A0A0A] border border-[#222222] text-white text-xs rounded focus:outline-none focus:border-[#00FF00] transition-colors placeholder:text-[#666666]"
           />
         </div>
 
-        {/* Status Select */}
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <SlidersHorizontal className="h-4 w-4 text-slate-500 shrink-0" />
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-full md:w-40 bg-slate-950 border border-slate-800 px-3 py-2 text-slate-300 text-xs rounded focus:outline-none focus:border-cyan-500 transition-colors cursor-pointer"
-          >
-            <option value="ALL">ALL STATUSES</option>
-            <option value="OPEN">OPEN</option>
-            <option value="ANALYZING">ANALYZING</option>
-            <option value="COMPLETED">COMPLETED</option>
-            <option value="ARCHIVED">ARCHIVED</option>
-          </select>
-        </div>
+        {/* Filter Controls */}
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+          {/* Status Filter */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <SlidersHorizontal className="h-3.5 w-3.5 text-[#666666] shrink-0" />
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full sm:w-36 bg-[#0A0A0A] border border-[#222222] px-2.5 py-2 text-white text-xs rounded focus:outline-none focus:border-[#00FF00] cursor-pointer"
+            >
+              <option value="ALL">ALL STATUSES</option>
+              <option value="OPEN">OPEN</option>
+              <option value="ANALYZING">ANALYZING</option>
+              <option value="COMPLETED">COMPLETED</option>
+            </select>
+          </div>
 
-        {/* Sort Select */}
-        <div className="w-full md:w-auto">
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as 'name' | 'date')}
-            className="w-full md:w-40 bg-slate-950 border border-slate-800 px-3 py-2 text-slate-300 text-xs rounded focus:outline-none focus:border-cyan-500 transition-colors cursor-pointer"
-          >
-            <option value="date">SORT BY CREATED</option>
-            <option value="name">SORT BY NAME</option>
-          </select>
+          {/* Sort By */}
+          <div className="w-full sm:w-auto">
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'name' | 'date')}
+              className="w-full sm:w-40 bg-[#0A0A0A] border border-[#222222] px-2.5 py-2 text-white text-xs rounded focus:outline-none focus:border-[#00FF00] cursor-pointer"
+            >
+              <option value="date">SORT BY CREATED</option>
+              <option value="name">SORT BY NAME</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      {/* Grid of Cases */}
+      {/* Grid of Case Dossier Cards (Styled with Audit Case aesthetic from image_5.png) */}
       {filteredCases.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredCases.map((c) => (
-            <div key={c.case_id} className="bg-slate-900 border border-slate-800 rounded p-6 flex flex-col justify-between hover:border-slate-700 transition-colors group">
-              <div>
-                <div className="flex justify-between items-start gap-4">
-                  <h4 className="font-bold text-slate-100 text-md truncate group-hover:text-cyan-400 transition-colors">{c.name}</h4>
-                  <span className={`px-2 py-0.5 border text-[9px] font-bold rounded uppercase tracking-wider shrink-0 ${
-                    c.status === 'OPEN' 
-                      ? 'border-cyan-800/40 bg-cyan-950/20 text-cyan-400'
-                      : c.status === 'ANALYZING'
-                        ? 'border-amber-800/40 bg-amber-950/20 text-amber-400 animate-pulse'
-                        : c.status === 'COMPLETED'
-                          ? 'border-emerald-800/40 bg-emerald-950/20 text-emerald-400'
-                          : 'border-slate-750 bg-slate-800/45 text-slate-500'
-                  }`}>
-                    {c.status}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 mt-3 line-clamp-3 h-12 leading-relaxed">
-                  {c.description || 'No description provided.'}
-                </p>
-              </div>
+          {filteredCases.map((c) => {
+            const isAssigned = isCaseAssigned(c.case_id);
+            return (
+              <div
+                key={c.case_id}
+                className="bg-[#101010] hover:bg-[#141414] border border-[#222222] hover:border-[#00FF00]/50 rounded p-5 flex flex-col justify-between transition-all duration-200 group shadow-sm hover:shadow-[0_0_15px_rgba(0,255,0,0.15)]"
+              >
+                <div>
+                  {/* Header: ID & Status */}
+                  <div className="flex justify-between items-start gap-3 pb-3 border-b border-[#1E1E1E]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-[#666666] select-all tracking-wider">
+                        {c.case_id.slice(0, 14)}...
+                      </span>
+                      {isAssigned && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded border border-[#00FF00]/30 bg-[#00FF00]/10 text-[#00FF00] font-bold">
+                          ASSIGNED
+                        </span>
+                      )}
+                    </div>
+                    <StatusBadge status={c.status} size="sm" />
+                  </div>
 
-              <div className="border-t border-slate-800/60 mt-6 pt-4 flex items-center justify-between text-[11px] text-slate-500">
-                <span>Created: {new Date(c.created_at).toLocaleDateString()}</span>
-                <Link
-                  to={`/investigations/${c.case_id}`}
-                  className="text-cyan-400 font-bold uppercase tracking-wider hover:underline"
-                >
-                  Open File &rarr;
-                </Link>
+                  {/* Case Name */}
+                  <h3 className="font-bold text-white text-sm mt-3 group-hover:text-[#00FF00] transition-colors truncate">
+                    <Link to={`/investigations/${c.case_id}`}>
+                      {c.name}
+                    </Link>
+                  </h3>
+
+                  {/* Description */}
+                  <p className="text-xs text-[#AAAAAA] mt-2 line-clamp-3 h-12 leading-relaxed font-mono">
+                    {c.description || 'No formal scope documented. Telemetry ingestion and graph correlation active.'}
+                  </p>
+                </div>
+
+                {/* Footer strip: Timestamp & Open Action */}
+                <div className="border-t border-[#1E1E1E] mt-5 pt-3.5 flex items-center justify-between text-[11px]">
+                  <span className="text-[#666666] flex items-center gap-1.5">
+                    <Calendar className="h-3 w-3 text-[#666666]" />
+                    {new Date(c.created_at).toLocaleDateString()}
+                  </span>
+                  <Link
+                    to={`/investigations/${c.case_id}`}
+                    className="inline-flex items-center gap-1.5 text-[#00FF00] group-hover:underline font-bold uppercase tracking-wider transition-colors"
+                  >
+                    <span>OPEN DOSSIER</span>
+                    <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
+                  </Link>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
-        <div className="py-20 text-center border border-dashed border-slate-800 rounded bg-slate-900/10">
-          <FolderOpen className="h-10 w-10 text-slate-700 mx-auto mb-3" />
-          <p className="text-xs text-slate-500 uppercase tracking-widest">No matching investigations found</p>
-        </div>
+        <EmptyState
+          title="No Investigation Files Found"
+          description={searchTerm || statusFilter !== 'ALL'
+            ? "No case files match the current query filters. Try adjusting your search term."
+            : filterMode === 'MY_CASES'
+            ? "You have no assigned investigation dossiers. Switch to 'All Cases' or create a new case."
+            : "No active cases registered yet. Click 'New Investigation' above to create one."}
+          action={searchTerm || statusFilter !== 'ALL' ? {
+            label: "Reset Filters",
+            onClick: () => {
+              setSearchTerm('');
+              setStatusFilter('ALL');
+            }
+          } : undefined}
+        />
       )}
 
       {/* New Case Creation Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 font-mono">
+          <div className="w-full max-w-lg bg-[#101010] border border-[#222222] rounded shadow-2xl relative text-xs">
             {/* Modal Header */}
-            <div className="flex items-center justify-between p-6 border-b border-slate-800">
-              <h3 className="text-xs font-bold text-cyan-400 uppercase tracking-widest">Create New Investigation Case</h3>
+            <div className="flex items-center justify-between p-5 border-b border-[#222222] bg-[#0A0A0A]">
+              <div className="flex items-center gap-2">
+                <FolderOpen className="h-4 w-4 text-[#00FF00]" />
+                <h3 className="font-bold text-white uppercase tracking-wider">
+                  Register New Investigation Case
+                </h3>
+              </div>
               <button 
                 onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-slate-200"
+                className="text-[#666666] hover:text-white p-1 rounded hover:bg-[#181818] transition-colors"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             </div>
 
             {/* Modal Form */}
-            <form onSubmit={handleCreateCase} className="p-6 space-y-4">
+            <form onSubmit={handleCreateCase} className="p-5 space-y-4">
               {modalError && (
-                <div className="p-3 border border-red-900 bg-red-950/20 text-red-400 text-xs font-semibold rounded flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                <div className="p-3 border border-[#FF3333]/40 bg-[#FF3333]/10 text-[#FF3333] text-xs font-semibold rounded">
                   {modalError}
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Case Name</label>
+                <label className="block font-bold text-white uppercase tracking-wider mb-1.5">
+                  Case Name <span className="text-[#FF3333]">*</span>
+                </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Operation Chimera AP-7"
+                  placeholder="e.g. Audit Case - Operation Chimera"
                   value={newCaseName}
                   onChange={(e) => setNewCaseName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 px-4 py-2.5 text-slate-200 text-xs rounded focus:outline-none focus:border-cyan-500 transition-colors"
+                  className="w-full bg-[#0A0A0A] border border-[#222222] px-3 py-2 text-white text-xs rounded focus:outline-none focus:border-[#00FF00] transition-colors placeholder:text-[#666666]"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Description</label>
+                <label className="block font-bold text-white uppercase tracking-wider mb-1.5">
+                  Investigative Scope & Description
+                </label>
                 <textarea
                   rows={4}
-                  placeholder="Investigative scope, target identifiers, and evidence boundaries..."
+                  placeholder="Document target identifiers, evidence boundaries, and investigation objectives..."
                   value={newCaseDesc}
                   onChange={(e) => setNewCaseDesc(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 px-4 py-2.5 text-slate-200 text-xs rounded focus:outline-none focus:border-cyan-500 transition-colors resize-none"
+                  className="w-full bg-[#0A0A0A] border border-[#222222] px-3 py-2 text-white text-xs rounded focus:outline-none focus:border-[#00FF00] transition-colors resize-none placeholder:text-[#666666] font-mono"
                 />
               </div>
 
-              <div className="flex justify-end gap-3 pt-4 border-t border-slate-850 mt-6">
+              <div className="flex justify-end gap-3 pt-3 border-t border-[#222222] mt-5">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
                   disabled={modalLoading}
-                  className="px-4 py-2 border border-slate-800 text-slate-400 hover:bg-slate-800/40 text-xs font-bold uppercase rounded transition-all"
+                  className="px-4 py-2 border border-[#222222] text-[#AAAAAA] hover:text-white hover:bg-[#181818] rounded transition-colors uppercase font-bold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={modalLoading}
-                  className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 text-xs font-bold uppercase tracking-wider rounded transition-all"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-[#00FF00] hover:bg-[#00DD00] disabled:opacity-50 text-black rounded font-bold uppercase tracking-wider transition-colors shadow-[0_0_12px_rgba(0,255,0,0.3)]"
                 >
                   {modalLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  Open File
+                  <span>Register Dossier</span>
                 </button>
               </div>
             </form>
@@ -292,3 +373,4 @@ const Investigations: React.FC = () => {
 };
 
 export default Investigations;
+

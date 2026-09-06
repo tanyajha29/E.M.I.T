@@ -487,6 +487,15 @@ class EvidenceNormalizer:
                 tool=tool
             ))
 
+        for p in meta.get("packages", []):
+            items.append(RawObservationItem(
+                indicator_type=IndicatorType.PACKAGE,
+                value=p,
+                observation_type=ObservationType.PACKAGE_NAME.value,
+                source=source,
+                tool=tool
+            ))
+
         return items
 
     @staticmethod
