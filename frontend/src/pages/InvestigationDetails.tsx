@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { 
   apiService, 
   Case, 
@@ -12,10 +12,10 @@ import {
   RiskAssessment,
   AttackGraphResponse,
   CaseStatus,
-  Report,
-  ProviderExecutionRecord
+  Report
 } from '../services/api';
 import { AttackGraphCanvas } from '../components/AttackGraphCanvas';
+import { AnalysisRunPanel } from '../components/AnalysisRunPanel';
 import { 
   Loader2, 
   FileCode, 
@@ -53,7 +53,10 @@ import { useUser } from '../context/UserContext';
 export const InvestigationDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const caseId = id || '';
+  const navigate = useNavigate();
   const { currentUser, filterMode, setFilterMode, isCaseAssigned } = useUser();
+  const [deletingCase, setDeletingCase] = useState(false);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<
     'overview' | 'evidence' | 'analysis' | 'apk_findings' | 'network_findings' | 
@@ -64,6 +67,7 @@ export const InvestigationDetails: React.FC = () => {
   const [caseObj, setCaseObj] = useState<Case | null>(null);
   const [evidenceList, setEvidenceList] = useState<EvidenceFile[]>([]);
   const [analysesList, setAnalysesList] = useState<AnalysisRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [indicatorsList, setIndicatorsList] = useState<Indicator[]>([]);
   const [observationsList, setObservationsList] = useState<Observation[]>([]);
   const [correlationsList, setCorrelationsList] = useState<Correlation[]>([]);
@@ -110,10 +114,12 @@ export const InvestigationDetails: React.FC = () => {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const loadCaseData = useCallback(async () => {
+  const loadCaseData = useCallback(async (showLoading = true) => {
     if (!caseId) return;
     try {
-      setLoading(true);
+      if (showLoading) {
+        setLoading(true);
+      }
       setError(false);
       
       const [
@@ -146,20 +152,37 @@ export const InvestigationDetails: React.FC = () => {
       }
 
       setCaseObj(caseData);
-      setEvidenceList(evidenceData);
-      setAnalysesList(analysesData);
-      setIndicatorsList(indicatorsData);
-      setObservationsList(obsData);
-      setCorrelationsList(corrData);
-      setThreatIntelList(threatData);
+      setEvidenceList(Array.isArray(evidenceData) ? evidenceData : []);
+      const runs = Array.isArray(analysesData) ? analysesData : [];
+      setAnalysesList(runs);
+
+      // Auto-select active running analysis or latest run
+      setSelectedRunId(prevSelected => {
+        if (prevSelected && runs.some(r => r.analysis_id === prevSelected)) {
+          return prevSelected;
+        }
+        const activeRun = runs.find(r => 
+          ['PENDING', 'STARTING', 'RUNNING', 'ANALYZING', 'NORMALIZING', 'CORRELATING', 'BUILDING_GRAPH'].includes((r.status || '').toUpperCase())
+        );
+        if (activeRun) return activeRun.analysis_id;
+        if (runs.length > 0) return runs[0].analysis_id;
+        return null;
+      });
+
+      setIndicatorsList(Array.isArray(indicatorsData) ? indicatorsData : []);
+      setObservationsList(Array.isArray(obsData) ? obsData : []);
+      setCorrelationsList(Array.isArray(corrData) ? corrData : []);
+      setThreatIntelList(Array.isArray(threatData) ? threatData : []);
       setRiskAssessment(riskData);
-      setGraphData(graphRes);
-      setReportsList(repData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+      setGraphData(graphRes && typeof graphRes === 'object' && Array.isArray(graphRes.nodes) ? graphRes : { nodes: [], edges: [] });
+      setReportsList(Array.isArray(repData) ? repData.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) : []);
     } catch (err) {
       console.error('Failed to load investigation details:', err);
       setError(true);
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   }, [caseId]);
 
@@ -179,26 +202,26 @@ export const InvestigationDetails: React.FC = () => {
 
   const handleFileUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedFile) return;
+    if (!selectedFile) {
+      setUploadError('Please choose an APK or PCAP file to upload');
+      return;
+    }
 
     try {
       setUploadLoading(true);
-      setUploadProgress(0);
       setUploadError(null);
+      setUploadProgress(0);
 
-      await apiService.uploadEvidence(caseId, selectedFile, (pct) => {
-        setUploadProgress(pct);
+      await apiService.uploadEvidence(caseId, selectedFile, (percent) => {
+        setUploadProgress(percent);
       });
 
       setSelectedFile(null);
       setUploadProgress(null);
-      const fileInput = document.getElementById('evidence-upload-input') as HTMLInputElement;
-      if (fileInput) fileInput.value = '';
-
       await loadCaseData();
     } catch (err: any) {
-      console.error('Evidence upload failed:', err);
-      setUploadError(err.response?.data?.detail || 'Upload failed. Verify magic bytes / file signature.');
+      console.error('Upload failed:', err);
+      setUploadError(err.response?.data?.detail || 'File ingest and cryptographic hashing failed.');
     } finally {
       setUploadLoading(false);
     }
@@ -214,6 +237,42 @@ export const InvestigationDetails: React.FC = () => {
     }
   };
 
+  const handleDeleteCase = async () => {
+    if (!caseObj) return;
+    if (!window.confirm(`Are you sure you want to permanently delete investigation dossier "${caseObj.name}"?\n\nThis will remove all evidence files, pipeline runs, IOCs, observations, and generated reports.`)) {
+      return;
+    }
+    try {
+      setDeletingCase(true);
+      await apiService.deleteCase(caseId);
+      navigate('/investigations');
+    } catch (err: any) {
+      console.error('Delete case failed:', err);
+      alert(err.response?.data?.detail || 'Failed to delete case.');
+      setDeletingCase(false);
+    }
+  };
+
+  const handleDeleteAnalysisRun = async (analysisId: string) => {
+    if (!window.confirm('Are you sure you want to permanently delete this analysis execution run and its provider results? This action cannot be undone.')) {
+      return;
+    }
+    try {
+      setDeletingRunId(analysisId);
+      await apiService.deleteAnalysisRun(caseId, analysisId);
+      setAnalysesList(prev => prev.filter(r => r.analysis_id !== analysisId));
+      if (selectedRunId === analysisId) {
+        setSelectedRunId(null);
+      }
+      await loadCaseData();
+    } catch (err: any) {
+      console.error('Delete analysis run failed:', err);
+      alert(err.response?.data?.detail || 'Failed to delete analysis run.');
+    } finally {
+      setDeletingRunId(null);
+    }
+  };
+
   const handleTriggerAnalysis = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!runEvidenceId) {
@@ -224,9 +283,14 @@ export const InvestigationDetails: React.FC = () => {
     try {
       setRunLoading(true);
       setRunError(null);
-      await apiService.triggerAnalysis(caseId, runEvidenceId, runType);
+      const newRun = await apiService.triggerAnalysis(caseId, runEvidenceId, runType);
       setRunEvidenceId('');
-      await loadCaseData();
+      if (newRun && newRun.analysis_id) {
+        setAnalysesList(prev => [newRun, ...prev.filter(r => r.analysis_id !== newRun.analysis_id)]);
+        setSelectedRunId(newRun.analysis_id);
+      } else {
+        await loadCaseData();
+      }
     } catch (err: any) {
       console.error('Analysis trigger failed:', err);
       setRunError(err.response?.data?.detail || 'Analysis pipeline initialization failed.');
@@ -239,13 +303,13 @@ export const InvestigationDetails: React.FC = () => {
     try {
       setEnriching(true);
       const enriched = await apiService.enrichThreatIntel(caseId);
-      setThreatIntelList(enriched);
+      setThreatIntelList(Array.isArray(enriched) ? enriched : []);
       const [updatedRisk, updatedGraph] = await Promise.all([
         apiService.getRiskAssessmentForCase(caseId).catch(() => null),
         apiService.getGraphForCase(caseId).catch(() => ({ nodes: [], edges: [] }))
       ]);
       setRiskAssessment(updatedRisk);
-      setGraphData(updatedGraph);
+      setGraphData(updatedGraph && typeof updatedGraph === 'object' && Array.isArray(updatedGraph.nodes) ? updatedGraph : { nodes: [], edges: [] });
     } catch (err) {
       console.error('Threat intelligence enrichment failed:', err);
     } finally {
@@ -273,7 +337,7 @@ export const InvestigationDetails: React.FC = () => {
       await apiService.generateReport(caseId, reportFormat, reportTitle);
       setReportSuccess('Forensic Dossier successfully compiled and stored.');
       const reps = await apiService.getReportsForCase(caseId);
-      setReportsList(reps.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
+      setReportsList(Array.isArray(reps) ? reps.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) : []);
     } catch (err: any) {
       console.error('Report compilation failed:', err);
       alert('Report generation failed: ' + (err.response?.data?.detail || err.message));
@@ -283,17 +347,20 @@ export const InvestigationDetails: React.FC = () => {
   };
 
   // Filtered views
-  const apkObservations = observationsList.filter(o => o.source === 'APK');
-  const networkObservations = observationsList.filter(o => o.source === 'PCAP');
+  const apkObservations = (observationsList || []).filter(o => o && o.source === 'APK');
+  const networkObservations = (observationsList || []).filter(o => o && o.source === 'PCAP');
 
-  const filteredIocs = indicatorsList.filter(ioc => {
-    const matchSearch = !iocFilter || ioc.value.toLowerCase().includes(iocFilter.toLowerCase()) ||
-      ioc.normalized_value.toLowerCase().includes(iocFilter.toLowerCase());
-    const matchType = iocTypeFilter === 'ALL' || ioc.type.toUpperCase() === iocTypeFilter;
+  const filteredIocs = (indicatorsList || []).filter(ioc => {
+    if (!ioc) return false;
+    const val = String(ioc.value || '').toLowerCase();
+    const norm = String(ioc.normalized_value || '').toLowerCase();
+    const query = iocFilter.toLowerCase();
+    const matchSearch = !iocFilter || val.includes(query) || norm.includes(query);
+    const matchType = iocTypeFilter === 'ALL' || String(ioc.type || '').toUpperCase() === iocTypeFilter;
     return matchSearch && matchType;
   });
 
-  const iocTypes = Array.from(new Set(indicatorsList.map(i => i.type.toUpperCase())));
+  const iocTypes = Array.from(new Set((indicatorsList || []).filter(Boolean).map(i => String(i.type || '').toUpperCase())));
 
   if (loading) {
     return (
@@ -422,11 +489,21 @@ export const InvestigationDetails: React.FC = () => {
 
             {/* Refresh Case Trigger */}
             <button
-              onClick={loadCaseData}
+              onClick={() => loadCaseData(true)}
               title="Refresh case data from backend"
               className="p-2 bg-[#181818] hover:bg-[#222222] border border-[#222222] hover:border-[#00FF00]/40 rounded text-[#AAAAAA] hover:text-[#00FF00] transition-colors"
             >
               <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Delete Case Trigger */}
+            <button
+              onClick={handleDeleteCase}
+              disabled={deletingCase}
+              title="Delete Entire Investigation Dossier"
+              className="p-2 bg-[#181818] hover:bg-[#FF3333]/20 border border-[#222222] hover:border-[#FF3333]/50 rounded text-[#AAAAAA] hover:text-[#FF3333] transition-colors"
+            >
+              {deletingCase ? <Loader2 className="h-3.5 w-3.5 animate-spin text-[#FF3333]" /> : <Trash2 className="h-3.5 w-3.5" />}
             </button>
           </div>
         </div>
@@ -804,158 +881,173 @@ export const InvestigationDetails: React.FC = () => {
                 <span className="text-[10px] text-[#666666]">{analysesList.length} PIPELINE EXECUTIONS</span>
               </div>
 
-              {/* Trigger Analysis Form */}
-              <form onSubmit={handleTriggerAnalysis} className="bg-[#0A0A0A] border border-[#222222] p-5 rounded space-y-4">
-                <div>
-                  <h4 className="font-bold text-white uppercase tracking-wider text-xs">
-                    Trigger Pipeline Execution
-                  </h4>
-                  <p className="text-[11px] text-[#AAAAAA] mt-0.5">
-                    Select an ingested evidence package to run containerized static decompilation (MobSF, Androguard, JADX, APKTool) or packet inspection (TShark, Scapy).
-                  </p>
-                </div>
+              {/* Active / Selected Analysis Run Execution Console */}
+              {(() => {
+                const selectedRun = analysesList.find(r => r.analysis_id === selectedRunId) || (analysesList.length > 0 ? analysesList[0] : null);
+                const activeRunningRun = analysesList.find(r => 
+                  ['PENDING', 'STARTING', 'RUNNING', 'ANALYZING', 'NORMALIZING', 'CORRELATING', 'BUILDING_GRAPH'].includes((r.status || '').toUpperCase())
+                );
+                const isAnyAnalysisActive = !!activeRunningRun;
+                const targetEvidence = selectedRun ? evidenceList.find(e => e.evidence_id === selectedRun.evidence_id) : null;
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="sm:col-span-2">
-                    <label className="block text-[10px] text-[#666666] uppercase font-bold mb-1">
-                      Evidence Package
-                    </label>
-                    <select
-                      value={runEvidenceId}
-                      onChange={(e) => setRunEvidenceId(e.target.value)}
-                      className="w-full bg-[#101010] border border-[#222222] px-3 py-2 text-xs text-white rounded focus:outline-none focus:border-[#00FF00] cursor-pointer"
-                    >
-                      <option value="">SELECT EVIDENCE TARGET...</option>
-                      {evidenceList.map((e) => (
-                        <option key={e.evidence_id} value={e.evidence_id}>
-                          {e.file_name} ({e.file_type})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] text-[#666666] uppercase font-bold mb-1">
-                      Analysis Pipeline
-                    </label>
-                    <select
-                      value={runType}
-                      onChange={(e) => setRunType(e.target.value as any)}
-                      className="w-full bg-[#101010] border border-[#222222] px-3 py-2 text-xs text-white rounded focus:outline-none focus:border-[#00FF00] cursor-pointer"
-                    >
-                      <option value="APK">APK STATIC ANALYSIS</option>
-                      <option value="PCAP">PCAP NETWORK FORENSICS</option>
-                    </select>
-                  </div>
-                </div>
-
-                {runError && (
-                  <div className="p-3 bg-[#FF3333]/10 border border-[#FF3333]/40 text-[#FF3333] rounded text-xs">
-                    {runError}
-                  </div>
-                )}
-
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    disabled={runLoading || !runEvidenceId}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-[#00FF00] hover:bg-[#00DD00] disabled:opacity-50 text-black rounded font-bold uppercase tracking-wider transition-all shadow-[0_0_12px_rgba(0,255,0,0.3)]"
-                  >
-                    {runLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                    <span>Execute Analysis Pipeline</span>
-                  </button>
-                </div>
-              </form>
-
-              {/* Analysis Runs & Provider Results */}
-              {analysesList.length > 0 ? (
-                <div className="space-y-5">
-                  {analysesList.map((run) => (
-                    <div key={run.analysis_id} className="bg-[#0A0A0A] border border-[#222222] rounded p-5 space-y-4">
-                      {/* Run Header */}
-                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-[#222222]">
-                        <div className="flex items-center gap-2.5 flex-wrap">
-                          <span className="font-bold text-white text-xs">RUN {run.analysis_id.slice(0, 8)}</span>
-                          <span className="px-2 py-0.5 rounded border border-[#FF8800]/40 bg-[#181818] text-[10px] font-bold text-[#FF8800]">
-                            {run.analysis_type} PIPELINE
-                          </span>
-                          <StatusBadge status={run.status} size="sm" />
-                          <span className="text-[10px] text-[#666666] uppercase">
-                            STAGE: <strong className="text-white">{run.current_stage}</strong>
-                          </span>
-                        </div>
-                        <span className="text-[11px] text-[#666666]">
-                          Started: {new Date(run.started_at).toLocaleString()}
-                        </span>
-                      </div>
-
-                      {/* Provider Results Grid */}
+                return (
+                  <div className="space-y-6">
+                    {/* Trigger Analysis Form */}
+                    <form onSubmit={handleTriggerAnalysis} className="bg-[#0A0A0A] border border-[#222222] p-5 rounded space-y-4">
                       <div>
-                        <span className="text-[10px] font-bold text-[#666666] uppercase tracking-wider block mb-2.5">
-                          Dynamic Analysis Provider Execution Records
-                        </span>
-
-                        {Object.keys(run.provider_results || {}).length > 0 ? (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {Object.entries(run.provider_results).map(([providerKey, record]: [string, ProviderExecutionRecord]) => (
-                              <div
-                                key={providerKey}
-                                className="p-3.5 bg-[#101010] border border-[#222222] rounded space-y-2"
-                              >
-                                <div className="flex justify-between items-start">
-                                  <div>
-                                    <span className="font-bold text-white text-xs block uppercase">
-                                      {record.provider || providerKey}
-                                    </span>
-                                    <span className="text-[10px] text-[#00FF00] font-mono block">
-                                      {record.provider_version ? `v${record.provider_version}` : 'Version: —'}
-                                    </span>
-                                  </div>
-                                  <StatusBadge status={record.status} size="sm" />
-                                </div>
-
-                                <div className="pt-2 border-t border-[#222222] text-[10px] space-y-1 text-[#AAAAAA]">
-                                  <div className="flex justify-between">
-                                    <span className="text-[#666666]">DURATION:</span>
-                                    <span className="text-white font-bold">{record.duration !== undefined ? `${record.duration.toFixed(2)}s` : '—'}</span>
-                                  </div>
-
-                                  {/* Render output metadata keys */}
-                                  {record.output_metadata && Object.keys(record.output_metadata).length > 0 && (
-                                    <div className="pt-1 text-[9px] space-y-0.5">
-                                      {Object.entries(record.output_metadata).slice(0, 3).map(([k, v]) => (
-                                        <div key={k} className="flex justify-between truncate">
-                                          <span className="text-[#666666] uppercase">{k}:</span>
-                                          <span className="text-white font-bold truncate max-w-[120px]">{String(v)}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {record.error && (
-                                  <div className="p-2 bg-[#FF3333]/10 border border-[#FF3333]/30 rounded text-[#FF3333] text-[10px]">
-                                    {record.error}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="p-4 bg-[#101010] border border-dashed border-[#222222] rounded text-center text-[11px] text-[#666666]">
-                            No provider records emitted yet for this run.
-                          </div>
-                        )}
+                        <h4 className="font-bold text-white uppercase tracking-wider text-xs">
+                          Trigger Pipeline Execution
+                        </h4>
+                        <p className="text-[11px] text-[#AAAAAA] mt-0.5">
+                          Select an ingested evidence package to run containerized static decompilation (MobSF, Androguard, JADX, APKTool) or packet inspection (TShark, Scapy).
+                        </p>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState
-                  title="No Analysis Executions Logged"
-                  description="Use the execution form above to launch containerized static or network forensic analysis."
-                />
-              )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="block text-[10px] text-[#666666] uppercase font-bold mb-1">
+                            Evidence Package
+                          </label>
+                          <select
+                            value={runEvidenceId}
+                            disabled={runLoading || isAnyAnalysisActive}
+                            onChange={(e) => setRunEvidenceId(e.target.value)}
+                            className="w-full bg-[#101010] border border-[#222222] px-3 py-2 text-xs text-white rounded focus:outline-none focus:border-[#00FF00] cursor-pointer disabled:opacity-50"
+                          >
+                            <option value="">SELECT EVIDENCE TARGET...</option>
+                            {evidenceList.map((e) => (
+                              <option key={e.evidence_id} value={e.evidence_id}>
+                                {e.file_name} ({e.file_type})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-[#666666] uppercase font-bold mb-1">
+                            Analysis Pipeline
+                          </label>
+                          <select
+                            value={runType}
+                            disabled={runLoading || isAnyAnalysisActive}
+                            onChange={(e) => setRunType(e.target.value as any)}
+                            className="w-full bg-[#101010] border border-[#222222] px-3 py-2 text-xs text-white rounded focus:outline-none focus:border-[#00FF00] cursor-pointer disabled:opacity-50"
+                          >
+                            <option value="APK">APK STATIC ANALYSIS</option>
+                            <option value="PCAP">PCAP NETWORK FORENSICS</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {runError && (
+                        <div className="p-3 bg-[#FF3333]/10 border border-[#FF3333]/40 text-[#FF3333] rounded text-xs">
+                          {runError}
+                        </div>
+                      )}
+
+                      <div className="flex justify-end items-center gap-3">
+                        {isAnyAnalysisActive && (
+                          <span className="text-[11px] text-[#00FF00] flex items-center gap-1.5 animate-pulse font-bold">
+                            <Radio className="h-3.5 w-3.5" />
+                            <span>Analysis run in progress...</span>
+                          </span>
+                        )}
+                        <button
+                          type="submit"
+                          disabled={runLoading || isAnyAnalysisActive || !runEvidenceId}
+                          className="inline-flex items-center gap-2 px-4 py-2 bg-[#00FF00] hover:bg-[#00DD00] disabled:opacity-50 text-black rounded font-bold uppercase tracking-wider transition-all shadow-[0_0_12px_rgba(0,255,0,0.3)] disabled:cursor-not-allowed"
+                        >
+                          {runLoading || isAnyAnalysisActive ? (
+                            <>
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              <span>Execution In Progress</span>
+                            </>
+                          ) : (
+                            <>
+                              <Play className="h-3.5 w-3.5" />
+                              <span>Execute Analysis Pipeline</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </form>
+
+                    {/* Historical Run Selector Tabs */}
+                    {analysesList.length > 0 && (
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-bold text-[#666666] uppercase tracking-wider">
+                            Investigation Execution History ({analysesList.length} Runs)
+                          </span>
+                          {selectedRun && (
+                            <button
+                              onClick={() => handleDeleteAnalysisRun(selectedRun.analysis_id)}
+                              disabled={deletingRunId === selectedRun.analysis_id}
+                              className="text-[10px] text-[#EF4444] hover:underline flex items-center gap-1"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              <span>Delete Selected Run</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                          {analysesList.map((run, runIdx) => {
+                            const isSelected = selectedRun?.analysis_id === run.analysis_id;
+                            const isRunActive = ['PENDING', 'STARTING', 'RUNNING', 'ANALYZING', 'NORMALIZING', 'CORRELATING', 'BUILDING_GRAPH'].includes((run.status || '').toUpperCase());
+
+                            return (
+                              <button
+                                key={run.analysis_id || runIdx}
+                                onClick={() => setSelectedRunId(run.analysis_id)}
+                                className={`flex items-center gap-2 px-3 py-2 rounded text-xs font-mono border transition-all shrink-0 ${
+                                  isSelected 
+                                    ? 'bg-[#181818] border-[#00FF00] text-white shadow-[0_0_8px_rgba(0,255,0,0.2)]' 
+                                    : 'bg-[#101010] border-[#222222] text-[#888888] hover:text-white hover:border-[#333333]'
+                                }`}
+                              >
+                                {isRunActive ? (
+                                  <Radio className="h-3 w-3 text-[#00FF00] animate-pulse" />
+                                ) : run.status === 'COMPLETED' ? (
+                                  <CheckCircle2 className="h-3 w-3 text-[#00FF00]" />
+                                ) : (
+                                  <span className="text-xs text-[#666666]">#</span>
+                                )}
+                                <span className="font-bold uppercase">
+                                  Run {run.analysis_id ? run.analysis_id.slice(0, 8) : `#${runIdx + 1}`}
+                                </span>
+                                <span className="text-[10px] text-[#888888]">
+                                  ({run.analysis_type})
+                                </span>
+                                <StatusBadge status={run.status} size="sm" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Real-time SOC/DFIR Analysis Execution Panel */}
+                    {selectedRun ? (
+                      <AnalysisRunPanel
+                        key={selectedRun.analysis_id}
+                        caseId={caseId}
+                        analysisRun={selectedRun}
+                        evidenceFileName={targetEvidence?.file_name}
+                        onRunCompleted={() => {
+                          loadCaseData(false);
+                        }}
+                        onNavigateTab={(tabName) => setActiveTab(tabName as any)}
+                      />
+                    ) : (
+                      <EmptyState
+                        title="No Analysis Executions Logged"
+                        description="Select an ingested evidence package above and click 'Execute Analysis Pipeline' to start forensic analysis."
+                      />
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
 

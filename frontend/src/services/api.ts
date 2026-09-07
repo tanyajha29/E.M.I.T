@@ -101,7 +101,19 @@ export interface EvidenceFile {
   created_at: string;
 }
 
-export type ProviderStatus = 'DISABLED' | 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+export type ProviderStatus = 
+  | 'PENDING' 
+  | 'STARTING' 
+  | 'EXECUTING' 
+  | 'RUNNING' 
+  | 'COMPLETED' 
+  | 'FAILED' 
+  | 'TIMEOUT' 
+  | 'CANCELLED' 
+  | 'SKIPPED' 
+  | 'DISABLED' 
+  | 'NOT_CONFIGURED' 
+  | 'UNAVAILABLE';
 
 export interface ProviderExecutionRecord {
   provider: string;
@@ -110,12 +122,37 @@ export interface ProviderExecutionRecord {
   completed_at?: string;
   status: ProviderStatus;
   duration?: number;
+  duration_seconds?: number;
+  message?: string;
   error?: string;
-  output_metadata: Record<string, any>;
+  output_metadata?: Record<string, any>;
+  execution_mode?: 'CONTAINER' | 'HOST' | string;
+  container_name?: string;
 }
 
-export type AnalysisStatus = 'PENDING' | 'COMPLETED' | 'PARTIAL' | 'FAILED';
-export type AnalysisStage = 'PENDING' | 'VALIDATING' | 'ANALYZING' | 'NORMALIZING' | 'COMPLETED' | 'FAILED';
+export type AnalysisStatus = 
+  | 'PENDING' 
+  | 'STARTING' 
+  | 'RUNNING' 
+  | 'ANALYZING' 
+  | 'NORMALIZING' 
+  | 'CORRELATING' 
+  | 'BUILDING_GRAPH' 
+  | 'COMPLETED' 
+  | 'PARTIAL' 
+  | 'FAILED' 
+  | 'CANCELLED';
+
+export type AnalysisStage = 
+  | 'PENDING' 
+  | 'STARTING' 
+  | 'VALIDATING' 
+  | 'ANALYZING' 
+  | 'NORMALIZING' 
+  | 'CORRELATING' 
+  | 'BUILDING_GRAPH' 
+  | 'COMPLETED' 
+  | 'FAILED';
 
 export interface AnalysisRun {
   analysis_id: string;
@@ -124,9 +161,12 @@ export interface AnalysisRun {
   analysis_type: 'APK' | 'PCAP';
   status: AnalysisStatus;
   current_stage: AnalysisStage;
+  progress_percent?: number;
+  elapsed_seconds?: number;
   started_at: string;
   completed_at?: string;
-  provider_results: Record<string, ProviderExecutionRecord>;
+  provider_results?: Record<string, ProviderExecutionRecord>;
+  providers?: Record<string, ProviderExecutionRecord>;
   errors: string[];
   warnings: string[];
   created_at: string;
@@ -327,6 +367,13 @@ export const apiService = {
   getAnalysisRun: async (caseId: string, analysisId: string): Promise<AnalysisRun> => {
     const res = await client.get<AnalysisRun>(`/cases/${caseId}/analyses/${analysisId}`);
     return res.data;
+  },
+  getAnalysisStatus: async (caseId: string, analysisId: string): Promise<AnalysisRun> => {
+    const res = await client.get<AnalysisRun>(`/cases/${caseId}/analyses/${analysisId}/status`);
+    return res.data;
+  },
+  deleteAnalysisRun: async (caseId: string, analysisId: string): Promise<void> => {
+    await client.delete(`/cases/${caseId}/analyses/${analysisId}`);
   },
 
   // Observations

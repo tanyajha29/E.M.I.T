@@ -93,7 +93,7 @@ class APKToolProvider(APKAnalysisProvider):
                 ["docker", "cp", evidence_path, f"{self.CONTAINER_NAME}:{container_apk}"],
                 capture_output=True,
                 text=True,
-                timeout=15.0
+                timeout=60.0
             )
             if cp_res.returncode != 0:
                 raise RuntimeError(f"docker cp failed: {cp_res.stderr.strip()}")
@@ -111,7 +111,7 @@ class APKToolProvider(APKAnalysisProvider):
                 apktool_cmd,
                 capture_output=True,
                 text=True,
-                timeout=120.0
+                timeout=300.0
             )
             logger.info(f"APKTool completed with return code {apktool_res.returncode}")
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { apiService, AnalysisRun, ProviderExecutionRecord } from '../services/api';
+import { Link, useNavigate } from 'react-router-dom';
+import { apiService, AnalysisRun, ProviderExecutionRecord, Case } from '../services/api';
 import { 
   RefreshCw, 
   Search, 
@@ -9,7 +9,9 @@ import {
   ChevronUp,
   ArrowRight,
   Filter,
-  Binary
+  Binary,
+  FolderOpen,
+  Trash2
 } from 'lucide-react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton';
@@ -18,6 +20,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { useUser } from '../context/UserContext';
 
 export const Analysis: React.FC = () => {
+  const navigate = useNavigate();
   const { currentUser, filterMode, setFilterMode, isCaseAssigned } = useUser();
   const [runs, setRuns] = useState<(AnalysisRun & { caseName: string })[]>([]);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
@@ -37,15 +40,19 @@ export const Analysis: React.FC = () => {
       else setRefreshing(true);
       setError(false);
 
-      const caseList = await apiService.getCases();
+      const caseList = await apiService.getCases().catch(() => [] as Case[]);
 
-      if (caseList.length > 0) {
+      if (caseList && caseList.length > 0) {
         const promises = caseList.map(async (c) => {
-          const runList = await apiService.getAnalysesForCase(c.case_id).catch(() => [] as AnalysisRun[]);
-          return runList.map(run => ({
-            ...run,
-            caseName: c.name
-          }));
+          try {
+            const runList = await apiService.getAnalysesForCase(c.case_id).catch(() => [] as AnalysisRun[]);
+            return (runList || []).map(run => ({
+              ...run,
+              caseName: c.name || 'Untitled Case'
+            }));
+          } catch {
+            return [] as (AnalysisRun & { caseName: string })[];
+          }
         });
         const results = await Promise.all(promises);
         setRuns(results.flat());
@@ -70,8 +77,11 @@ export const Analysis: React.FC = () => {
     : runs;
 
   const filteredRuns = scopedRuns.filter(run => {
-    const matchSearch = run.caseName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      run.analysis_id.toLowerCase().includes(searchTerm.toLowerCase());
+    const caseName = (run.caseName || '').toLowerCase();
+    const analysisId = (run.analysis_id || '').toLowerCase();
+    const search = searchTerm.toLowerCase();
+
+    const matchSearch = !searchTerm || caseName.includes(search) || analysisId.includes(search);
     const matchStatus = statusFilter === 'ALL' || run.status === statusFilter;
     const matchType = typeFilter === 'ALL' || run.analysis_type === typeFilter;
     return matchSearch && matchStatus && matchType;
@@ -79,6 +89,18 @@ export const Analysis: React.FC = () => {
 
   const toggleExpand = (runId: string) => {
     setExpandedRunId(expandedRunId === runId ? null : runId);
+  };
+
+  const handleDeleteRun = async (caseId: string, analysisId: string) => {
+    if (!window.confirm(`Are you sure you want to delete analysis run ${analysisId.slice(0, 8)}? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      await apiService.deleteAnalysisRun(caseId, analysisId);
+      setRuns(prev => prev.filter(r => r.analysis_id !== analysisId));
+    } catch (err: any) {
+      alert(`Failed to delete analysis run: ${err.message || 'Unknown error'}`);
+    }
   };
 
   if (loading) {
@@ -180,7 +202,7 @@ export const Analysis: React.FC = () => {
             <select
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
-              className="w-full sm:w-36 bg-emit-bg border border-emit-border px-2.5 py-2 text-slate-300 text-xs rounded focus:outline-none focus:border-emit-violet cursor-pointer"
+              className="w-full sm:w-36 bg-[#0A0A0A] border border-[#222222] px-2.5 py-2 text-white text-xs rounded focus:outline-none focus:border-[#00FF00] cursor-pointer"
             >
               <option value="ALL">ALL PIPELINES</option>
               <option value="APK">APK STATIC</option>
@@ -204,25 +226,29 @@ export const Analysis: React.FC = () => {
                   <th className="py-3 px-4 font-semibold">Execution Status</th>
                   <th className="py-3 px-4 font-semibold">Timestamps</th>
                   <th className="py-3 px-4 font-semibold text-right">Providers</th>
+                  <th className="py-3 px-4 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1A1A1A] text-[#AAAAAA]">
                 {filteredRuns.map((run) => {
                   const isExpanded = expandedRunId === run.analysis_id;
-                  const providerCount = Object.keys(run.provider_results || {}).length;
+                  const providerResults = (run.provider_results && typeof run.provider_results === 'object' && !Array.isArray(run.provider_results))
+                    ? run.provider_results
+                    : {};
+                  const providerCount = Object.keys(providerResults).length;
 
                   return (
-                    <React.Fragment key={run.analysis_id}>
+                    <React.Fragment key={run.analysis_id || Math.random().toString()}>
                       <tr className="hover:bg-[#151515] transition-colors">
                         <td className="py-3.5 px-4 font-bold text-white select-all">
-                          {run.analysis_id.slice(0, 8)}...
+                          {run.analysis_id ? `${run.analysis_id.slice(0, 8)}...` : '—'}
                         </td>
                         <td className="py-3.5 px-4">
                           <Link
                             to={`/investigations/${run.case_id}`}
                             className="font-bold text-[#00FF00] hover:underline flex items-center gap-1"
                           >
-                            <span>{run.caseName}</span>
+                            <span>{run.caseName || 'Case Dossier'}</span>
                             <ArrowRight className="h-3 w-3" />
                           </Link>
                         </td>
@@ -232,13 +258,13 @@ export const Analysis: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-3.5 px-4 text-white font-bold uppercase text-[11px]">
-                          {run.current_stage}
+                          {run.current_stage || 'INITIALIZING'}
                         </td>
                         <td className="py-3.5 px-4">
                           <StatusBadge status={run.status} size="sm" />
                         </td>
                         <td className="py-3.5 px-4 text-[#666666] text-[11px] space-y-0.5">
-                          <div>Start: {new Date(run.started_at).toLocaleString()}</div>
+                          <div>Start: {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}</div>
                           {run.completed_at && (
                             <div>Done: {new Date(run.completed_at).toLocaleString()}</div>
                           )}
@@ -252,12 +278,21 @@ export const Analysis: React.FC = () => {
                             {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                           </button>
                         </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <button
+                            onClick={() => handleDeleteRun(run.case_id, run.analysis_id)}
+                            className="p-1.5 rounded bg-[#FF3333]/10 hover:bg-[#FF3333]/20 border border-[#FF3333]/30 hover:border-[#FF3333] text-[#FF3333] transition-colors"
+                            title="Delete Analysis Run"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
                       </tr>
 
                       {/* Expandable Provider Records Row */}
                       {isExpanded && (
                         <tr className="bg-[#0A0A0A] border-b border-[#222222]">
-                          <td colSpan={7} className="p-4">
+                          <td colSpan={8} className="p-4">
                             <div className="space-y-3">
                               <span className="text-[10px] font-bold text-[#666666] uppercase tracking-wider block">
                                 Container Execution Records for Run {run.analysis_id}
@@ -265,50 +300,59 @@ export const Analysis: React.FC = () => {
 
                               {providerCount > 0 ? (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                                  {Object.entries(run.provider_results).map(([pName, rec]: [string, ProviderExecutionRecord]) => (
-                                    <div
-                                      key={pName}
-                                      className="p-3 bg-[#101010] border border-[#222222] rounded space-y-1.5"
-                                    >
-                                      <div className="flex justify-between items-start">
-                                        <div>
-                                          <span className="font-bold text-white text-xs block uppercase">
-                                            {rec.provider || pName}
-                                          </span>
-                                          <span className="text-[10px] text-[#AAAAAA]">
-                                            {rec.provider_version ? `v${rec.provider_version}` : 'Version: —'}
-                                          </span>
-                                        </div>
-                                        <StatusBadge status={rec.status} size="sm" />
-                                      </div>
+                                  {Object.entries(providerResults).map(([pName, rec]: [string, any]) => {
+                                    const record: ProviderExecutionRecord = rec || {};
+                                    const metadata = record.output_metadata && typeof record.output_metadata === 'object'
+                                      ? record.output_metadata
+                                      : {};
 
-                                      <div className="text-[10px] text-[#AAAAAA] pt-1 border-t border-[#1C1C1C] space-y-1">
-                                        <div className="flex justify-between">
-                                          <span>DURATION:</span>
-                                          <span className="text-white font-bold">
-                                            {rec.duration !== undefined ? `${rec.duration.toFixed(2)}s` : '—'}
-                                          </span>
+                                    return (
+                                      <div
+                                        key={pName}
+                                        className="p-3 bg-[#101010] border border-[#222222] rounded space-y-1.5"
+                                      >
+                                        <div className="flex justify-between items-start">
+                                          <div>
+                                            <span className="font-bold text-white text-xs block uppercase">
+                                              {record.provider || pName}
+                                            </span>
+                                            <span className="text-[10px] text-[#AAAAAA]">
+                                              {record.provider_version ? `v${record.provider_version}` : 'Version: —'}
+                                            </span>
+                                          </div>
+                                          <StatusBadge status={record.status} size="sm" />
                                         </div>
 
-                                        {rec.output_metadata && Object.keys(rec.output_metadata).length > 0 && (
-                                          <div className="space-y-0.5 pt-0.5 text-[9px]">
-                                            {Object.entries(rec.output_metadata).slice(0, 3).map(([k, v]) => (
-                                              <div key={k} className="flex justify-between truncate">
-                                                <span className="text-[#666666] uppercase">{k}:</span>
-                                                <span className="text-white truncate max-w-[120px]">{String(v)}</span>
-                                              </div>
-                                            ))}
+                                        <div className="text-[10px] text-[#AAAAAA] pt-1 border-t border-[#1C1C1C] space-y-1">
+                                          <div className="flex justify-between">
+                                            <span>DURATION:</span>
+                                            <span className="text-white font-bold">
+                                              {typeof record.duration === 'number'
+                                                ? `${record.duration.toFixed(2)}s`
+                                                : (record.duration ? `${record.duration}s` : '—')}
+                                            </span>
+                                          </div>
+
+                                          {Object.keys(metadata).length > 0 && (
+                                            <div className="space-y-0.5 pt-0.5 text-[9px]">
+                                              {Object.entries(metadata).slice(0, 3).map(([k, v]) => (
+                                                <div key={k} className="flex justify-between truncate">
+                                                  <span className="text-[#666666] uppercase">{k}:</span>
+                                                  <span className="text-white truncate max-w-[120px]">{String(v)}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {record.error && (
+                                          <div className="p-2 bg-[#FF3333]/10 border border-[#FF3333]/30 rounded text-[#FF3333] text-[10px]">
+                                            {record.error}
                                           </div>
                                         )}
                                       </div>
-
-                                      {rec.error && (
-                                        <div className="p-2 bg-[#FF3333]/10 border border-[#FF3333]/30 rounded text-[#FF3333] text-[10px]">
-                                          {rec.error}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               ) : (
                                 <p className="text-xs text-[#AAAAAA]">
@@ -328,10 +372,15 @@ export const Analysis: React.FC = () => {
         </div>
       ) : (
         <EmptyState
+          icon={FolderOpen}
           title="No Pipeline Runs Logged"
           description={searchTerm || statusFilter !== 'ALL' || typeFilter !== 'ALL'
             ? "No pipeline executions match the active filter criteria."
-            : "No analysis jobs executed yet across all investigations."}
+            : "No analysis jobs have been executed yet in your investigation scope. Open an investigation case to upload evidence files (APK / PCAP) and trigger forensic parsers."}
+          action={{
+            label: "Go To Investigations",
+            onClick: () => navigate('/investigations')
+          }}
         />
       )}
     </div>

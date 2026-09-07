@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     THREAT_INTEL_TIMEOUT_SECONDS: int = 10
     
     # Execution timeouts
-    ANALYSIS_TIMEOUT_SECONDS: int = 180
+    ANALYSIS_TIMEOUT_SECONDS: int = 360
     
     # File upload constraints
     MAX_EVIDENCE_SIZE_BYTES: int = 500 * 1024 * 1024  # 500 MB limit
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "backend/.env", "../.env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )

@@ -1,4 +1,18 @@
 services:
+  mongodb:
+    image: mongo:7.0
+    container_name: emit-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   mobsf:
     image: emit-analysis:latest
     build:
@@ -19,3 +33,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
+
+volumes:
+  mongo_data:
+    driver: local

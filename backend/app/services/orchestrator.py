@@ -101,147 +101,269 @@ class AnalysisOrchestrator:
 
                 raise DuplicateAnalysisError(f"Analysis run already in progress for evidence {evidence_id}")
 
-        # 3. Create AnalysisRun record in MongoDB as PENDING
+        # 3. Create AnalysisRun record in MongoDB as PENDING with all providers pre-initialized in PENDING
         analysis_id = str(uuid4())
+        
+        all_types = {
+            "APK": ["androguard", "mobsf", "jadx", "apktool"],
+            "PCAP": ["tshark", "scapy"]
+        }
+        
+        provider_defaults = {
+            "androguard": {"message": "Queued: DEX & manifest structural analysis", "mode": "HOST", "container": None},
+            "mobsf": {"message": "Queued: Containerized static security scanning", "mode": "CONTAINER", "container": "emit-mobsf"},
+            "jadx": {"message": "Queued: Containerized Java decompilation", "mode": "CONTAINER", "container": "emit-mobsf"},
+            "apktool": {"message": "Queued: Containerized resource decoding", "mode": "CONTAINER", "container": "emit-mobsf"},
+            "tshark": {"message": "Queued: Containerized packet frame dissection", "mode": "CONTAINER", "container": "emit-mobsf"},
+            "scapy": {"message": "Queued: Protocol header & stream parsing", "mode": "HOST", "container": None},
+        }
+
+        initial_providers = {}
+        for p_name in all_types.get(analysis_type, []):
+            prov = provider_registry.get_provider(p_name)
+            ver = prov.version if prov else "1.0.0"
+            meta = provider_defaults.get(p_name, {"message": "Queued for analysis", "mode": "HOST", "container": None})
+            initial_providers[p_name] = ProviderExecutionRecord(
+                provider=p_name,
+                provider_version=ver,
+                status=ProviderStatus.PENDING,
+                message=meta["message"],
+                execution_mode=meta["mode"],
+                container_name=meta["container"]
+            )
+
         run = AnalysisRun(
             analysis_id=analysis_id,
             case_id=case_id,
             evidence_id=evidence_id,
             analysis_type=AnalysisType(analysis_type),
-            status=AnalysisStatus.PENDING,
-            current_stage=AnalysisStage.PENDING
+            status=AnalysisStatus.STARTING,
+            current_stage=AnalysisStage.STARTING,
+            progress_percent=0,
+            provider_results=initial_providers,
+            providers=initial_providers
         )
         self.run_repo.create(run.model_dump())
 
-        # 4. Start execution loop asynchronously or in blocking mode for sync test runs
-        self._process_run(run, evidence_dict["storage_path"])
-        return analysis_id
+        # 4. Process execution (caller can run this directly or in background)
+        return analysis_id, run, evidence_dict["storage_path"]
 
     def _process_run(self, run: AnalysisRun, evidence_path: str):
         analysis_id = run.analysis_id
         errors = []
         warnings = []
-        provider_records = {}
+        provider_records = dict(run.provider_results or {})
+
+        provider_messages = {
+            "androguard": "Extracting manifest, permissions, and DEX opcodes...",
+            "mobsf": "Running containerized static security analysis...",
+            "jadx": "Decompiling classes.dex to Java source...",
+            "apktool": "Disassembling APK bytecode and decoding XML resources...",
+            "tshark": "Dissecting packet frames, protocols, and conversations...",
+            "scapy": "Analyzing protocol headers and payload streams...",
+        }
+
+        all_types = {
+            "APK": ["androguard", "mobsf", "jadx", "apktool"],
+            "PCAP": ["tshark", "scapy"]
+        }
+        target_provider_names = all_types.get(run.analysis_type.value, [])
+        total_providers = max(1, len(target_provider_names))
 
         # Stage 1: VALIDATING
-        self.run_repo.update_stage(analysis_id, "VALIDATING", "PENDING")
+        self.run_repo.update_stage(analysis_id, "VALIDATING", "RUNNING", progress_percent=5)
         try:
             self._validate_evidence_file(evidence_path, run.analysis_type.value)
         except Exception as e:
             logger.error(f"Validation failed for run {analysis_id}: {e}")
-            # Ensure full trace is not written directly to user-facing database record
             sanitized_err = f"Validation failed: {str(e)}"
             self.run_repo.complete(
                 analysis_id, 
                 "FAILED", 
                 datetime.utcnow(), 
                 [sanitized_err], 
-                []
+                [],
+                progress_percent=100
             )
             return
 
         # Stage 2: ANALYZING
-        self.run_repo.update_stage(analysis_id, "ANALYZING", "PENDING")
-        
-        all_types = {
-            "APK": ["mobsf", "androguard", "jadx", "apktool"],
-            "PCAP": ["tshark", "scapy"]
-        }
-        
-        providers_to_evaluate = []
-        for name in all_types[run.analysis_type.value]:
-            p = provider_registry.get_provider(name)
-            if p:
-                providers_to_evaluate.append(p)
+        self.run_repo.update_stage(analysis_id, "ANALYZING", "RUNNING", progress_percent=10)
 
-        for provider in providers_to_evaluate:
-            name = provider.provider_name
+        for idx, name in enumerate(target_provider_names):
+            provider = provider_registry.get_provider(name)
             started_time = datetime.utcnow()
-            
+            base_progress = 10 + int((idx / total_providers) * 65)
+
+            if not provider:
+                record = ProviderExecutionRecord(
+                    provider=name,
+                    status=ProviderStatus.UNAVAILABLE,
+                    message="Provider plugin not registered in engine",
+                    error="Provider not found in registry"
+                )
+                provider_records[name] = record
+                self.run_repo.update_provider_result(analysis_id, name, record.model_dump(), progress_percent=base_progress)
+                warnings.append(f"Provider {name} not found")
+                continue
+
             # Evaluate provider state semantics
             if not provider.is_enabled():
                 record = ProviderExecutionRecord(
                     provider=name,
                     provider_version=provider.version,
                     status=ProviderStatus.DISABLED,
+                    message="Provider disabled in configuration",
                     output_metadata={"tool_version": provider.version}
                 )
+                provider_records[name] = record
+                self.run_repo.update_provider_result(analysis_id, name, record.model_dump(), progress_percent=base_progress)
+                warnings.append(f"Provider {name} is disabled")
+                continue
             elif not provider.is_configured():
                 record = ProviderExecutionRecord(
                     provider=name,
                     provider_version=provider.version,
                     status=ProviderStatus.NOT_CONFIGURED,
+                    message="Provider missing configuration parameters",
                     error=f"Provider {name} is not configured",
                     output_metadata={"tool_version": provider.version}
                 )
+                provider_records[name] = record
+                self.run_repo.update_provider_result(analysis_id, name, record.model_dump(), progress_percent=base_progress)
+                warnings.append(f"Provider {name} is not configured")
+                continue
             elif not provider.is_available():
                 record = ProviderExecutionRecord(
                     provider=name,
                     provider_version=provider.version,
                     status=ProviderStatus.UNAVAILABLE,
+                    message="Provider container/binary service unavailable",
                     error=f"Provider {name} is unavailable",
                     output_metadata={"tool_version": provider.version}
                 )
-            else:
-                # Executable! Run under timeout protection
-                record = None
-                start_ticks = time.time()
-                
-                def run_func():
-                    if run.analysis_type == AnalysisType.APK:
-                        return provider.analyze_apk(evidence_path)
-                    else:
-                        return provider.analyze_pcap(evidence_path)
+                provider_records[name] = record
+                self.run_repo.update_provider_result(analysis_id, name, record.model_dump(), progress_percent=base_progress)
+                warnings.append(f"Provider {name} is unavailable")
+                continue
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(run_func)
-                    try:
-                        record = future.result(timeout=settings.ANALYSIS_TIMEOUT_SECONDS)
-                    except concurrent.futures.TimeoutError:
-                        logger.warning(f"Provider {name} timed out for run {analysis_id}")
-                        record = ProviderExecutionRecord(
-                            provider=name,
-                            provider_version=provider.version,
-                            started_at=started_time,
-                            completed_at=datetime.utcnow(),
-                            status=ProviderStatus.FAILED,
-                            duration=float(time.time() - start_ticks),
-                            error=f"Timeout of {settings.ANALYSIS_TIMEOUT_SECONDS}s exceeded",
-                            output_metadata={"tool_version": provider.version}
-                        )
-                    except Exception as e:
-                        logger.error(f"Provider {name} crashed: {e}", exc_info=True)
-                        record = ProviderExecutionRecord(
-                            provider=name,
-                            provider_version=provider.version,
-                            started_at=started_time,
-                            completed_at=datetime.utcnow(),
-                            status=ProviderStatus.FAILED,
-                            duration=float(time.time() - start_ticks),
-                            error=f"{provider.provider_name} crashed: {str(e)}",
-                            output_metadata={"tool_version": provider.version}
-                        )
+            # -------------------------------------------------------------
+            # Active Provider Execution: Transition STARTING -> EXECUTING -> COMPLETED
+            # -------------------------------------------------------------
+            # Transition 1: STARTING
+            exec_mode = "CONTAINER" if name in ["mobsf", "jadx", "apktool", "tshark"] else "HOST"
+            container_name = "emit-mobsf" if exec_mode == "CONTAINER" else None
 
-            # Persist provider-level result immediately
+            starting_record = ProviderExecutionRecord(
+                provider=name,
+                provider_version=provider.version,
+                status=ProviderStatus.STARTING,
+                started_at=started_time,
+                message=f"Initializing {name.upper()} execution environment...",
+                execution_mode=exec_mode,
+                container_name=container_name,
+                output_metadata={"tool_version": provider.version}
+            )
+            self.run_repo.update_provider_result(analysis_id, name, starting_record.model_dump(), progress_percent=base_progress + 2)
+
+            # Transition 2: EXECUTING
+            executing_msg = provider_messages.get(name, f"Executing {name.upper()} forensic analysis...")
+            executing_record = ProviderExecutionRecord(
+                provider=name,
+                provider_version=provider.version,
+                status=ProviderStatus.EXECUTING,
+                started_at=started_time,
+                message=executing_msg,
+                execution_mode=exec_mode,
+                container_name=container_name,
+                output_metadata={"tool_version": provider.version}
+            )
+            self.run_repo.update_provider_result(analysis_id, name, executing_record.model_dump(), progress_percent=base_progress + 5)
+
+            # Run with timeout protection
+            record = None
+            start_ticks = time.time()
+            
+            def run_func():
+                if run.analysis_type == AnalysisType.APK:
+                    return provider.analyze_apk(evidence_path)
+                else:
+                    return provider.analyze_pcap(evidence_path)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_func)
+                try:
+                    record = future.result(timeout=settings.ANALYSIS_TIMEOUT_SECONDS)
+                    # Normalize successful completion
+                    if record and record.status in [ProviderStatus.COMPLETED, ProviderStatus.RUNNING]:
+                        record.status = ProviderStatus.COMPLETED
+                        if not record.message:
+                            record.message = f"{name.upper()} analysis completed successfully"
+                        if record.duration is None:
+                            record.duration = float(time.time() - start_ticks)
+                        record.duration_seconds = record.duration
+                        record.execution_mode = exec_mode
+                        record.container_name = container_name
+                        if not record.started_at:
+                            record.started_at = started_time
+                        if not record.completed_at:
+                            record.completed_at = datetime.utcnow()
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"Provider {name} timed out for run {analysis_id}")
+                    record = ProviderExecutionRecord(
+                        provider=name,
+                        provider_version=provider.version,
+                        started_at=started_time,
+                        completed_at=datetime.utcnow(),
+                        status=ProviderStatus.TIMEOUT,
+                        duration=float(time.time() - start_ticks),
+                        duration_seconds=float(time.time() - start_ticks),
+                        message=f"Provider exceeded configured timeout ({settings.ANALYSIS_TIMEOUT_SECONDS}s)",
+                        error=f"Timeout of {settings.ANALYSIS_TIMEOUT_SECONDS}s exceeded",
+                        execution_mode=exec_mode,
+                        container_name=container_name,
+                        output_metadata={"tool_version": provider.version}
+                    )
+                except Exception as e:
+                    logger.error(f"Provider {name} crashed: {e}", exc_info=True)
+                    record = ProviderExecutionRecord(
+                        provider=name,
+                        provider_version=provider.version,
+                        started_at=started_time,
+                        completed_at=datetime.utcnow(),
+                        status=ProviderStatus.FAILED,
+                        duration=float(time.time() - start_ticks),
+                        duration_seconds=float(time.time() - start_ticks),
+                        message=f"{name.upper()} process exited with an error",
+                        error=f"{provider.provider_name} execution error: {str(e)}",
+                        execution_mode=exec_mode,
+                        container_name=container_name,
+                        output_metadata={"tool_version": provider.version}
+                    )
+
             provider_records[name] = record
-            self.run_repo.update_provider_result(analysis_id, name, record.model_dump())
+            finished_progress = 10 + int(((idx + 1) / total_providers) * 65)
+            self.run_repo.update_provider_result(analysis_id, name, record.model_dump(), progress_percent=finished_progress)
 
             if record.status == ProviderStatus.COMPLETED:
                 pass
-            elif record.status == ProviderStatus.FAILED:
-                errors.append(f"Provider {name} failed: {record.error}")
+            elif record.status in [ProviderStatus.FAILED, ProviderStatus.TIMEOUT]:
+                errors.append(f"Provider {name} {record.status.value.lower()}: {record.error or record.message}")
             elif record.status in [ProviderStatus.UNAVAILABLE, ProviderStatus.NOT_CONFIGURED]:
                 warnings.append(f"Provider {name} not run: status is {record.status.value}")
 
         # Stage 3: NORMALIZING
-        self.run_repo.update_stage(analysis_id, "NORMALIZING", "PENDING")
+        self.run_repo.update_stage(analysis_id, "NORMALIZING", "RUNNING", progress_percent=80)
         try:
-            # Map provider results and invoke placeholder normalizer/correlation contracts
             provider_results_dict = {k: v.model_dump() for k, v in provider_records.items()}
             normalized = EvidenceNormalizer.normalize(provider_results_dict, run.case_id, run.evidence_id)
             
-            # Invocation check of placeholders (produces zero db writes/findings)
+            # Stage 4: CORRELATING
+            self.run_repo.update_stage(analysis_id, "CORRELATING", "RUNNING", progress_percent=90)
             correlations = CorrelationEngine.correlate(normalized)
+            
+            # Stage 5: BUILDING_GRAPH
+            self.run_repo.update_stage(analysis_id, "BUILDING_GRAPH", "RUNNING", progress_percent=95)
             attack_chain = AttackChainReconstructor.reconstruct(normalized, correlations)
             RiskEngine.assess(normalized, correlations, attack_chain)
         except Exception as e:
@@ -249,18 +371,19 @@ class AnalysisOrchestrator:
             errors.append(f"Normalization stage error: {str(e)}")
 
         # Complete execution run and map final status
-        executable_providers = [p for p in provider_records.values() if p.status not in [ProviderStatus.DISABLED]]
+        executable_providers = [p for p in provider_records.values() if p.status not in [ProviderStatus.DISABLED, ProviderStatus.NOT_CONFIGURED, ProviderStatus.UNAVAILABLE]]
         completed_providers = [p for p in executable_providers if p.status == ProviderStatus.COMPLETED]
 
         if not completed_providers:
-            # All executable providers failed, or none are configured/available
-            final_status = AnalysisStatus.FAILED
-            errors.append("No enabled/available analysis provider completed execution successfully")
+            if not executable_providers:
+                final_status = AnalysisStatus.FAILED
+                errors.append("No enabled/available analysis provider configured")
+            else:
+                final_status = AnalysisStatus.FAILED
+                errors.append("No enabled analysis provider completed execution successfully")
         elif len(completed_providers) == len(executable_providers):
-            # All ran successfully
             final_status = AnalysisStatus.COMPLETED
         else:
-            # Some completed, others failed or were not available
             final_status = AnalysisStatus.PARTIAL
 
-        self.run_repo.complete(analysis_id, final_status.value, datetime.utcnow(), errors, warnings)
+        self.run_repo.complete(analysis_id, final_status.value, datetime.utcnow(), errors, warnings, progress_percent=100)

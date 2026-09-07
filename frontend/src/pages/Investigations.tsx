@@ -11,7 +11,8 @@ import {
   ArrowRight,
   Calendar,
   Shield,
-  Filter
+  Filter,
+  Trash2
 } from 'lucide-react';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { LoadingSkeleton } from '../components/ui/LoadingSkeleton';
@@ -24,6 +25,7 @@ export const Investigations: React.FC = () => {
   const [cases, setCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [deletingCaseId, setDeletingCaseId] = useState<string | null>(null);
 
   // Search & Filter state
   const [searchTerm, setSearchTerm] = useState('');
@@ -79,6 +81,25 @@ export const Investigations: React.FC = () => {
       setModalError(err.response?.data?.detail || 'Unable to register case dossier. Try again.');
     } finally {
       setModalLoading(false);
+    }
+  };
+
+  const handleDeleteCase = async (e: React.MouseEvent, caseId: string, caseName: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!window.confirm(`Are you sure you want to delete investigation dossier "${caseName}" (${caseId})?\n\nThis will permanently delete the case, evidence, analyses, IOCs, and graph entities.`)) {
+      return;
+    }
+
+    try {
+      setDeletingCaseId(caseId);
+      await apiService.deleteCase(caseId);
+      setCases(prev => prev.filter(c => c.case_id !== caseId));
+    } catch (err: any) {
+      console.error('Failed to delete case:', err);
+      alert(err.response?.data?.detail || 'Failed to delete investigation case.');
+    } finally {
+      setDeletingCaseId(null);
     }
   };
 
@@ -255,19 +276,33 @@ export const Investigations: React.FC = () => {
                   </p>
                 </div>
 
-                {/* Footer strip: Timestamp & Open Action */}
+                {/* Footer strip: Timestamp & Open/Delete Actions */}
                 <div className="border-t border-[#1E1E1E] mt-5 pt-3.5 flex items-center justify-between text-[11px]">
                   <span className="text-[#666666] flex items-center gap-1.5">
                     <Calendar className="h-3 w-3 text-[#666666]" />
                     {new Date(c.created_at).toLocaleDateString()}
                   </span>
-                  <Link
-                    to={`/investigations/${c.case_id}`}
-                    className="inline-flex items-center gap-1.5 text-[#00FF00] group-hover:underline font-bold uppercase tracking-wider transition-colors"
-                  >
-                    <span>OPEN DOSSIER</span>
-                    <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
-                  </Link>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={(e) => handleDeleteCase(e, c.case_id, c.name)}
+                      disabled={deletingCaseId === c.case_id}
+                      title="Delete Investigation Dossier"
+                      className="p-1 text-[#666666] hover:text-[#FF3333] transition-colors rounded hover:bg-[#181818]"
+                    >
+                      {deletingCaseId === c.case_id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[#FF3333]" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    <Link
+                      to={`/investigations/${c.case_id}`}
+                      className="inline-flex items-center gap-1.5 text-[#00FF00] group-hover:underline font-bold uppercase tracking-wider transition-colors"
+                    >
+                      <span>OPEN DOSSIER</span>
+                      <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
+                    </Link>
+                  </div>
                 </div>
               </div>
             );

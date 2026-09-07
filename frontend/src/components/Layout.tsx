@@ -18,6 +18,7 @@ import {
 import { apiService, HealthResponse, Case } from '../services/api';
 import { StatusIndicator } from './ui/StatusIndicator';
 import { useUser } from '../context/UserContext';
+import { ErrorBoundary } from './ErrorBoundary';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -307,7 +308,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
         {/* Main Content Area */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto bg-[#000000]">
-          {children}
+          <ErrorBoundary fallbackTitle="Investigation View Error">
+            {children}
+          </ErrorBoundary>
         </main>
       </div>
     </div>

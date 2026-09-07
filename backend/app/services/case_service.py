@@ -104,6 +104,31 @@ class CaseService:
         if current_user and current_user.role != UserRole.ADMIN and case_dict.get("owner_id") != current_user.user_id:
             return False
 
+        # Cascade delete all child entities for this case
+        try:
+            from app.db.repositories.evidence_repository import EvidenceRepository
+            from app.db.repositories.analysis_run_repository import AnalysisRunRepository
+            from app.db.repositories.observation_repository import ObservationRepository
+            from app.db.repositories.indicator_repository import IndicatorRepository
+            from app.db.repositories.correlation_repository import CorrelationRepository
+            from app.db.repositories.threat_intel_repository import ThreatIntelRepository
+            from app.db.repositories.risk_repository import RiskRepository
+            from app.db.repositories.attack_repository import AttackNodeRepository, AttackEdgeRepository
+            from app.db.repositories.report_repository import ReportRepository
+
+            EvidenceRepository().delete_many({"case_id": case_id})
+            AnalysisRunRepository().delete_many({"case_id": case_id})
+            ObservationRepository().delete_many({"case_id": case_id})
+            IndicatorRepository().delete_many({"case_id": case_id})
+            CorrelationRepository().delete_many({"case_id": case_id})
+            ThreatIntelRepository().delete_many({"case_id": case_id})
+            RiskRepository().delete_many({"case_id": case_id})
+            AttackNodeRepository().delete_many({"case_id": case_id})
+            AttackEdgeRepository().delete_many({"case_id": case_id})
+            ReportRepository().delete_many({"case_id": case_id})
+        except Exception:
+            pass
+
         return self.repository.delete_one({"case_id": case_id})
 
     def assign_case_users(self, case_id: str, assigned_user_ids: list[str], current_user: Optional[UserOut] = None) -> Optional[Case]:

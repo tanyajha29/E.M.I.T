@@ -93,7 +93,7 @@ class JADXProvider(APKAnalysisProvider):
                 ["docker", "cp", evidence_path, f"{self.CONTAINER_NAME}:{container_apk}"],
                 capture_output=True,
                 text=True,
-                timeout=15.0
+                timeout=60.0
             )
             if cp_res.returncode != 0:
                 raise RuntimeError(f"docker cp failed: {cp_res.stderr.strip()}")
@@ -105,13 +105,14 @@ class JADXProvider(APKAnalysisProvider):
                 self.CONTAINER_JADX_BIN,
                 "-d", container_out,
                 "--no-res",
+                "--threads-count", "4",
                 container_apk
             ]
             jadx_res = subprocess.run(
                 jadx_cmd,
                 capture_output=True,
                 text=True,
-                timeout=120.0
+                timeout=300.0
             )
             # Note: JADX exit code 0 or 1 (warnings/errors on obfuscated classes) can still produce valid decompilation
             logger.info(f"JADX completed with return code {jadx_res.returncode}")

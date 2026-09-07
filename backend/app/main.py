@@ -458,6 +458,7 @@ def get_attack_graph_for_case(
 def trigger_analysis(
     case_id: str,
     evidence_id: str,
+    background_tasks: BackgroundTasks,
     analysis_type: str = Query(..., pattern="^(APK|PCAP)$"),
     orchestrator: AnalysisOrchestrator = Depends(get_orchestrator),
     run_repo: AnalysisRunRepository = Depends(get_run_repo),
@@ -466,10 +467,21 @@ def trigger_analysis(
 ):
     case_service.verify_case_access(case_id, current_user, allow_viewer=False)
     try:
-        analysis_id = orchestrator.run_analysis(case_id, evidence_id, analysis_type)
+        analysis_id, run, storage_path = orchestrator.run_analysis(case_id, evidence_id, analysis_type)
+        
+        # Dispatch background processor
+        if background_tasks is not None:
+            background_tasks.add_task(orchestrator._process_run, run, storage_path)
+        else:
+            # Fallback for sync execution in non-background environments
+            orchestrator._process_run(run, storage_path)
+
         run_record = run_repo.get_by_id(analysis_id)
         if not run_record:
             raise HTTPException(status_code=500, detail="AnalysisRun record not created")
+        
+        # Calculate initial elapsed seconds
+        run_record["elapsed_seconds"] = 0.0
         return AnalysisRun(**run_record)
     except DuplicateAnalysisError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -487,7 +499,31 @@ def get_analyses_for_case(
 ):
     case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     runs_list = run_repo.list_by_case(case_id)
-    return [AnalysisRun(**r) for r in runs_list]
+    now = datetime.utcnow()
+    
+    results = []
+    for r in runs_list:
+        started = r.get("started_at")
+        completed = r.get("completed_at")
+        if started:
+            if isinstance(started, str):
+                try:
+                    started = datetime.fromisoformat(started)
+                except Exception:
+                    started = None
+            if started:
+                if completed:
+                    if isinstance(completed, str):
+                        try:
+                            completed = datetime.fromisoformat(completed)
+                        except Exception:
+                            completed = None
+                    if completed:
+                        r["elapsed_seconds"] = round((completed - started).total_seconds(), 2)
+                else:
+                    r["elapsed_seconds"] = round((now - started).total_seconds(), 2)
+        results.append(AnalysisRun(**r))
+    return results
 
 @app.get("/cases/{case_id}/analyses/{analysis_id}", response_model=AnalysisRun)
 def get_analysis_run(
@@ -499,9 +535,59 @@ def get_analysis_run(
 ):
     case_service.verify_case_access(case_id, current_user, allow_viewer=True)
     run_record = run_repo.get_by_id(analysis_id)
-    if not run_record or run_record["case_id"] != case_id:
+    if not run_record or run_record.get("case_id") != case_id:
         raise HTTPException(status_code=404, detail="Analysis run not found")
+    
+    now = datetime.utcnow()
+    started = run_record.get("started_at")
+    completed = run_record.get("completed_at")
+    if started:
+        if isinstance(started, str):
+            try:
+                started = datetime.fromisoformat(started)
+            except Exception:
+                started = None
+        if started:
+            if completed:
+                if isinstance(completed, str):
+                    try:
+                        completed = datetime.fromisoformat(completed)
+                    except Exception:
+                        completed = None
+                if completed:
+                    run_record["elapsed_seconds"] = round((completed - started).total_seconds(), 2)
+            else:
+                run_record["elapsed_seconds"] = round((now - started).total_seconds(), 2)
+
     return AnalysisRun(**run_record)
+
+@app.get("/cases/{case_id}/analyses/{analysis_id}/status", response_model=AnalysisRun)
+def get_analysis_run_status(
+    case_id: str,
+    analysis_id: str,
+    run_repo: AnalysisRunRepository = Depends(get_run_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    return get_analysis_run(case_id, analysis_id, run_repo, case_service, current_user)
+
+@app.delete("/cases/{case_id}/analyses/{analysis_id}")
+def delete_analysis_run(
+    case_id: str,
+    analysis_id: str,
+    run_repo: AnalysisRunRepository = Depends(get_run_repo),
+    case_service: CaseService = Depends(get_case_service),
+    current_user: UserOut = Depends(get_current_user)
+):
+    case_service.verify_case_access(case_id, current_user, allow_viewer=False)
+    run_record = run_repo.get_by_id(analysis_id)
+    if not run_record or run_record.get("case_id") != case_id:
+        raise HTTPException(status_code=404, detail="Analysis run not found")
+    
+    deleted = run_repo.delete_one({"analysis_id": analysis_id})
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Analysis run could not be deleted")
+    return {"message": "Analysis run deleted successfully", "analysis_id": analysis_id}
 
 # =====================================================================
 # THREAT INTEL & RISK ASSESSMENT ENDPOINTS

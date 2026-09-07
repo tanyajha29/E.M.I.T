@@ -28,7 +28,7 @@ class MobSFProvider(APKAnalysisProvider):
             return False
         try:
             # Check if MobSF container is up by pinging the root endpoint
-            res = httpx.get(settings.MOBSF_URL, timeout=2.0)
+            res = httpx.get(settings.MOBSF_URL, timeout=5.0)
             return res.status_code in [200, 302, 401, 403]
         except Exception:
             return False
@@ -59,7 +59,10 @@ class MobSFProvider(APKAnalysisProvider):
                 output_metadata={"tool_version": self.version}
             )
 
-        headers = {"Authorization": settings.MOBSF_API_KEY}
+        headers = {
+            "Authorization": settings.MOBSF_API_KEY,
+            "X-MobSF-API-Key": settings.MOBSF_API_KEY
+        }
         try:
             # 1. Upload APK to MobSF
             file_name = os.path.basename(evidence_path)
@@ -70,7 +73,7 @@ class MobSFProvider(APKAnalysisProvider):
                     f"{settings.MOBSF_URL}/api/v1/upload",
                     headers=headers,
                     files=files,
-                    timeout=30.0
+                    timeout=120.0
                 )
 
             if upload_res.status_code != 200:
@@ -92,7 +95,7 @@ class MobSFProvider(APKAnalysisProvider):
                 f"{settings.MOBSF_URL}/api/v1/scan",
                 headers=headers,
                 data=scan_payload,
-                timeout=120.0
+                timeout=300.0
             )
 
             if scan_res.status_code != 200:
@@ -105,7 +108,7 @@ class MobSFProvider(APKAnalysisProvider):
                 f"{settings.MOBSF_URL}/api/v1/report_json",
                 headers=headers,
                 data=report_payload,
-                timeout=30.0
+                timeout=60.0
             )
 
             if report_res.status_code != 200:

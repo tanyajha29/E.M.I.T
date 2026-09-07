@@ -1,6 +1,7 @@
 import logging
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
+import certifi
 from app.core.config import settings
 
 logger = logging.getLogger("emit.database")
@@ -33,11 +34,14 @@ class Database:
             try:
                 uri = self._uri_override or settings.MONGODB_URI
                 db_name = self._db_override or settings.MONGODB_DATABASE
-                # serverSelectionTimeoutMS controls discovery timeout to fail fast
-                self._client = MongoClient(
-                    uri,
-                    serverSelectionTimeoutMS=2000
-                )
+                
+                client_kwargs = {
+                    "serverSelectionTimeoutMS": 5000
+                }
+                if uri.startswith("mongodb+srv://") or "ssl=true" in uri.lower() or "tls=true" in uri.lower():
+                    client_kwargs["tlsCAFile"] = certifi.where()
+
+                self._client = MongoClient(uri, **client_kwargs)
                 self._db = self._client[db_name]
             except Exception as e:
                 logger.error(f"Failed to initialize MongoDB client: {e}")

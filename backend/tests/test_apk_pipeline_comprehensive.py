@@ -12,7 +12,20 @@ from app.services.orchestrator import AnalysisOrchestrator
 from app.db.repositories.case_repository import CaseRepository
 from app.db.repositories.evidence_repository import EvidenceRepository
 
+from app.core.security import get_current_user
+from app.schemas.user import UserOut, UserRole
+
 client = TestClient(app)
+
+mock_analyst = UserOut(
+    user_id="test-analyst-apk",
+    email="analyst@apk.local",
+    full_name="APK Pipeline Tester",
+    role=UserRole.INVESTIGATOR,
+    badge_id="APK-101",
+    is_active=True,
+    created_at=datetime.utcnow()
+)
 
 
 def create_minimal_apk_bytes():
@@ -26,6 +39,7 @@ def create_minimal_apk_bytes():
 
 @pytest.fixture
 def temp_case():
+    app.dependency_overrides[get_current_user] = lambda: mock_analyst
     case_repo = CaseRepository()
     case_id = f"test-apk-pipe-{datetime.utcnow().timestamp()}"
     case_repo.insert_one({
@@ -33,11 +47,14 @@ def temp_case():
         "name": "APK Pipeline Test Case",
         "description": "Comprehensive APK pipeline test",
         "status": "OPEN",
+        "owner_id": mock_analyst.user_id,
+        "assigned_user_ids": [mock_analyst.user_id],
         "created_at": datetime.utcnow()
     })
     yield case_id
     case_repo.collection.delete_many({"case_id": case_id})
     EvidenceRepository().collection.delete_many({"case_id": case_id})
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_apk_pipeline_valid_upload(temp_case):
