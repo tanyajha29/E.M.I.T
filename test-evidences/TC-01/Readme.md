@@ -99,15 +99,15 @@ The APK report identified:
 
 ### Analysis Completed
 
-![Analysis completed](scrrenshots/Analysis.png)
+![Analysis completed](./scrrenshots/Analysis.png)
 
 ### Investigation Overview
 
-![Investigation overview](scrrenshots/Overview.png)
+![Investigation overview](./scrrenshots/Overview.png)
 
 ### Attack Graph
 
-![Attack graph showing APK-to-network relationships](scrrenshots/Attack_Graph.png)
+![Attack graph showing APK-to-network relationships](./scrrenshots/Attack_Graph.png)
 
 ## 9. Final Result
 
