@@ -29,3 +29,7 @@ class BaseRepository:
     def delete_one(self, query: dict) -> bool:
         result = self.collection.delete_one(query)
         return result.deleted_count > 0
+
+    def delete_many(self, query: dict) -> int:
+        result = self.collection.delete_many(query)
+        return result.deleted_count

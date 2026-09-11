@@ -1482,7 +1482,7 @@ export const InvestigationDetails: React.FC = () => {
                 </span>
               </div>
 
-              <div className="h-[560px] rounded border border-[#222222] overflow-hidden bg-[#000000]">
+              <div className="h-[650px] rounded border border-[#222222] overflow-hidden bg-[#000000]">
                 <AttackGraphCanvas
                   nodesData={graphData.nodes}
                   edgesData={graphData.edges}

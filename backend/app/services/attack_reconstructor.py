@@ -58,6 +58,10 @@ class AttackChainReconstructor:
         if corr_repo is None:
             corr_repo = CorrelationRepository()
 
+        # Clean stale nodes and edges for this case before reconstructing fresh graph
+        node_repo.delete_many({"case_id": case_id})
+        edge_repo.delete_many({"case_id": case_id})
+
         # Load case observations, indicators, and correlations
         observations = obs_repo.find_all({"case_id": case_id})
         indicators = ind_repo.find_all({"case_id": case_id})
@@ -88,7 +92,7 @@ class AttackChainReconstructor:
                     existing.timestamp = timestamp
                 return existing
 
-            # Check DB if previously saved
+            # Check DB if previously saved in this run
             existing_db = node_repo.find_one({
                 "case_id": case_id,
                 "node_type": node_type.value,
@@ -170,11 +174,21 @@ class AttackChainReconstructor:
             if src == "APK":
                 # Ensure Application node exists for this APK evidence
                 if ev_id not in apk_app_nodes:
-                    # Find package name or default
-                    pkg_obs = next((o for o in observations if o.get("evidence_id") == ev_id and o.get("observation_type") == ObservationType.PACKAGE_NAME.value), None)
+                    # Find authoritative package name for this evidence
+                    pkg_candidates = [
+                        o for o in observations
+                        if o.get("evidence_id") == ev_id and o.get("observation_type") == ObservationType.PACKAGE_NAME.value and o.get("value")
+                    ]
+                    pkg_obs = None
+                    if pkg_candidates:
+                        # Prioritize androguard/mobsf
+                        pkg_obs = next(
+                            (o for o in pkg_candidates if o.get("metadata", {}).get("tool") in ["androguard", "mobsf"]),
+                            pkg_candidates[0]
+                        )
                     pkg_name = pkg_obs.get("value") if pkg_obs else "Android Application"
                     app_node = get_or_create_node(
-                        NodeType.APPLICATION, pkg_name, ev_id, timestamp=t_dt, metadata={"evidence_id": ev_id}
+                        NodeType.APPLICATION, pkg_name, ev_id, timestamp=t_dt, metadata={"evidence_id": ev_id, "package_name": pkg_name}
                     )
                     apk_app_nodes[ev_id] = app_node
                 app_node = apk_app_nodes[ev_id]

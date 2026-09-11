@@ -133,6 +133,9 @@ class EvidenceNormalizer:
 
         raw_items: List[RawObservationItem] = []
 
+        # 0. Clean stale observations for this specific evidence in this case
+        observation_repo.delete_many({"case_id": case_id, "evidence_id": evidence_id})
+
         # 1. Extract from all available completed provider records
         for provider_name, record in provider_results.items():
             status = record.get("status") if isinstance(record, dict) else getattr(record, "status", None)
@@ -491,7 +494,7 @@ class EvidenceNormalizer:
             items.append(RawObservationItem(
                 indicator_type=IndicatorType.PACKAGE,
                 value=p,
-                observation_type=ObservationType.PACKAGE_NAME.value,
+                observation_type=ObservationType.SUSPICIOUS_STRING.value,
                 source=source,
                 tool=tool
             ))

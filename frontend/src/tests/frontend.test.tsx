@@ -33,7 +33,7 @@ describe('Frontend Forensic Component Suite', () => {
     render(<AttackGraphCanvas nodesData={[]} edgesData={[]} height="400px" />);
     expect(screen.getByText('No Attack Graph Data')).toBeInTheDocument();
     expect(
-      screen.getByText(/Run APK or PCAP analysis pipeline to extract evidence entities/i)
+      screen.getByText(/Execute the APK or PCAP analysis pipeline to extract evidence entities/i)
     ).toBeInTheDocument();
   });
 
@@ -74,7 +74,7 @@ describe('Frontend Forensic Component Suite', () => {
   });
 
   // 5. Graph Canvas
-  it('renders graph canvas with nodes, legend, and edge classifications', () => {
+  it('renders graph canvas with mode switcher and active nodes', () => {
     const mockNodes: AttackNode[] = [
       {
         node_id: 'node-app-1',
@@ -115,11 +115,12 @@ describe('Frontend Forensic Component Suite', () => {
     ];
 
     render(<AttackGraphCanvas nodesData={mockNodes} edgesData={mockEdges} height="500px" />);
-    // Graph Legend must be rendered
-    expect(screen.getByText('Graph Legend')).toBeInTheDocument();
-    expect(screen.getByText('Application')).toBeInTheDocument();
-    expect(screen.getByText('Domain')).toBeInTheDocument();
-    expect(screen.getByText('Correlated')).toBeInTheDocument();
+    // View Switcher controls must be present
+    expect(screen.getByText('Investigation Focus')).toBeInTheDocument();
+    expect(screen.getByText('Full Provenance')).toBeInTheDocument();
+    // Node values and badges should render in the canvas
+    expect(screen.getByText('com.malicious.app')).toBeInTheDocument();
+    expect(screen.getByText('c2.evil-stealer.biz')).toBeInTheDocument();
   });
 
   // 6. Timeline Component
